@@ -29,8 +29,12 @@ pub fn FieldStreamPartial(
     comptime Writer: type,
 ) type {
     return struct {
+        pub const ReadError = Reader.Error || CsvReadError;
+        pub const WriteError = Writer.Error || error{EndOfStream};
+        pub const Error = ReadError || WriteError;
+
         _reader: Reader,
-        row: usize = 0,
+        _row: usize = 0,
         _opts: PartialOpts = .{},
         _flags: FSFlags = .{},
 
@@ -42,24 +46,29 @@ pub fn FieldStreamPartial(
             };
         }
 
+        /// Returns the current row number
+        pub fn row(self: @This()) usize {
+            return self._row;
+        }
+
         /// Returns whether the field just parsed was at the end of a row
-        pub fn atRowEnd(self: *@This()) bool {
+        pub fn atRowEnd(self: @This()) bool {
             return self._flags._done or self._flags._inc_row;
         }
 
         /// Returns we're at the end of the input
-        pub fn atEnd(self: *@This()) bool {
+        pub fn atEnd(self: @This()) bool {
             return self._flags._done;
         }
 
         /// Parse the next field
-        pub fn next(self: *@This(), writer: Writer) !bool {
+        pub fn next(self: *@This(), writer: Writer) Error!bool {
             if (self._flags._done) {
                 return false;
             }
 
             if (self._flags._inc_row) {
-                self.row += 1;
+                self._row += 1;
                 self._flags._inc_row = false;
             }
 
@@ -70,7 +79,7 @@ pub fn FieldStreamPartial(
             for (0..(MAX_FIELD_LEN + 1)) |i| {
                 index = i;
                 const cur = self._reader.readByte() catch |err| {
-                    if (err == error.EndOfStream) {
+                    if (err == WriteError.EndOfStream) {
                         break;
                     }
                     self._flags._done = true;
@@ -193,7 +202,7 @@ test "csv field streamer partial" {
         }
         const field = buff.items;
         try std.testing.expectEqualStrings(expected[ei], field);
-        try std.testing.expectEqual(row, stream.row);
+        try std.testing.expectEqual(row, stream._row);
     }
 }
 
@@ -205,123 +214,47 @@ pub fn FieldStream(
     comptime Reader: type,
     comptime Writer: type,
 ) type {
+    const Fs = FieldStreamPartial(
+        Reader,
+        std.io.FixedBufferStream([]u8).Writer,
+    );
     return struct {
-        _reader: Reader,
-        row: usize = 0,
-        _flags: FSFlags = .{},
+        pub const ReadError = Fs.ReadError;
+        pub const WriteError = Fs.WriteError;
+        pub const Error = Fs.Error;
+        _partial: Fs,
 
         /// Creates a new CSV Field Stream
         pub fn init(reader: Reader) @This() {
             return .{
-                ._reader = reader,
+                ._partial = Fs.init(reader, .{ .max_len = 1_024 }),
             };
         }
 
+        /// Returns the current row number
+        pub fn row(self: @This()) usize {
+            return self._partial._row;
+        }
+
         /// Returns whether the field just parsed was at the end of a row
-        pub fn atRowEnd(self: *@This()) bool {
-            return self._flags._done or self._flags._inc_row;
+        pub fn atRowEnd(self: @This()) bool {
+            return self._partial.atRowEnd();
         }
 
         /// Returns we're at the end of the input
-        pub fn atEnd(self: *@This()) bool {
-            return self._flags._done;
+        pub fn atEnd(self: @This()) bool {
+            return self._partial.atEnd();
         }
 
         /// Parse the next field
         pub fn next(self: *@This(), writer: Writer) !bool {
-            if (self._flags._done) {
-                return false;
-            }
+            var b: [1024]u8 = undefined;
+            var buff = std.io.fixedBufferStream(&b);
+            const _writer = buff.writer();
 
-            if (self._flags._inc_row) {
-                self.row += 1;
-                self._flags._inc_row = false;
-            }
-
-            var buffer: [1_024]u8 = undefined;
-            var index: usize = 0;
-            // Make sure we don't hit an infinite loop
-            while (index < buffer.len) {
-                const cur = self._reader.readByte() catch |err| {
-                    if (err == error.EndOfStream) {
-                        break;
-                    }
-                    self._flags._done = true;
-                    return err;
-                };
-
-                defer {
-                    self._flags._prev = cur;
-                }
-
-                const was_comma = self._flags._prev == ',' or self._flags._prev == '\r' or self._flags._prev == '\n';
-
-                if (!self._flags._in_quote and was_comma and cur == '"') {
-                    self._flags._in_quote = true;
-                } else if (cur == ',' or cur == '\r' or cur == '\n') {
-                    if (self._flags._in_quote) {
-                        buffer[index] = cur;
-                        index += 1;
-                        continue;
-                    }
-                    self._flags._endStr = false;
-
-                    defer {
-                        self._flags._cr = cur == '\r';
-                    }
-                    if (self._flags._cr and cur != '\n') {
-                        self._flags._done = true;
-                        return CsvReadError.InvalidLineEnding;
-                    }
-
-                    if (cur == '\n') {
-                        self._flags._inc_row = true;
-                    }
-                    if (cur != '\r') {
-                        try writer.writeAll(buffer[0..index]);
-                        return true;
-                    }
-                } else if (self._flags._cr) {
-                    self._flags._done = true;
-                    return CsvReadError.InvalidLineEnding;
-                } else if (cur == '"') {
-                    if (self._flags._prev == '"' and self._flags._endStr) {
-                        self._flags._endStr = false;
-                        self._flags._in_quote = true;
-                        buffer[index] = '"';
-                        index += 1;
-                    } else if (self._flags._endStr) {
-                        self._flags._done = true;
-                        return CsvReadError.QuotePrematurelyTerminated;
-                    } else if (self._flags._in_quote) {
-                        self._flags._in_quote = false;
-                        self._flags._endStr = true;
-                    } else {
-                        self._flags._done = true;
-                        return CsvReadError.UnexpectedQuote;
-                    }
-                } else if (self._flags._endStr) {
-                    self._flags._done = true;
-                    return CsvReadError.QuotePrematurelyTerminated;
-                } else {
-                    buffer[index] = cur;
-                    index += 1;
-                }
-            }
-
-            if (index >= buffer.len) {
-                return CsvReadError.InternalLimitReached;
-            }
-
-            self._flags._done = true;
-            if (self._flags._in_quote) {
-                return CsvReadError.UnexpectedEndOfFile;
-            }
-            if (self._flags._cr) {
-                return CsvReadError.InvalidLineEnding;
-            }
-            try writer.writeAll(buffer[0..index]);
-            return true;
+            const hasNext = try self._partial.next(_writer);
+            try writer.writeAll(buff.getWritten());
+            return hasNext;
         }
     };
 }
@@ -364,6 +297,6 @@ test "csv field streamer" {
         }
         const field = buff.items;
         try std.testing.expectEqualStrings(expected[ei], field);
-        try std.testing.expectEqual(row, stream.row);
+        try std.testing.expectEqual(row, stream.row());
     }
 }

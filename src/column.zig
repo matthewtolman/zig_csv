@@ -209,12 +209,13 @@ pub const Row = struct {
 /// Will parse the reader line-by-line instead of all at once
 /// Memory is owned by returned rows, so call Row.deinit()
 pub fn Parser(comptime Reader: type) type {
+    const Fs = stream.FieldStream(Reader, std.ArrayList(u8).Writer);
     return struct {
-        pub const Error = CsvReadError || std.mem.Allocator.Error || error{
+        pub const Error = Fs.Error || std.mem.Allocator.Error || error{
             EndOfInput,
             EndOfStream,
             ReadError,
-        } || std.posix.ReadError;
+        };
 
         _allocator: std.mem.Allocator,
         err: ?Error = null,
@@ -225,10 +226,7 @@ pub fn Parser(comptime Reader: type) type {
         pub fn init(allocator: std.mem.Allocator, reader: Reader) @This() {
             return .{
                 ._allocator = allocator,
-                ._field_stream = stream.FieldStream(
-                    Reader,
-                    std.ArrayList(u8).Writer,
-                ).init(reader),
+                ._field_stream = Fs.init(reader),
             };
         }
 
