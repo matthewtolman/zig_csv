@@ -1,5 +1,7 @@
 # ZCSV (Zig CSV)
 
+> Supported Zig versions: 0.13.0, 0.14.0-dev
+
 ZCSV is a CSV parser and writer library. The goal is to provide both writers and parsers which are allocation free while also having a parser which does use memory allocations for a more developer-friendly interface.
 
 Note: All parsers do operate line-by-line for all operations, including validation. This means that partial reads may happen when the first several rows of a file are valid but there is an error in the middle.
