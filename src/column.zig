@@ -254,7 +254,7 @@ pub fn Parser(comptime Reader: type) type {
                 return err;
             }
 
-            if (self._done) {
+            if (self._field_stream.atEnd()) {
                 return null;
             }
 
@@ -274,20 +274,11 @@ pub fn Parser(comptime Reader: type) type {
                 // Clean up our field memory if we have an error
                 errdefer field.deinit();
 
-                const has_field = try self._field_stream.next(field._data.writer());
-                if (!has_field) {
-                    // We hit this if we hit the end of the input and there
-                    // are no fields left
-                    return Error.EndOfInput;
-                }
+                try self._field_stream.next(field._data.writer());
 
                 // try adding our field to our row
                 try row._data.append(field);
                 at_row_end = self._field_stream.atRowEnd();
-            }
-
-            if (self._field_stream.atEnd() and (row._data.items.len == 0 or (row._data.items.len == 1 and row._data.items[0].data().len == 0))) {
-                return Error.EndOfInput;
             }
 
             // Return our row
@@ -337,7 +328,6 @@ test "csv parser" {
             defer {
                 ef += 1;
             }
-
             try std.testing.expectEqualStrings(e_row[ef], field.data());
         }
     }

@@ -27,7 +27,8 @@ pub fn main() !void {
     //
     // next does throw if it has an error.
     // next will return `false` when it hits the end of the input
-    while (try parser.next(stderr)) {
+    while (!parser.atEnd()) {
+        try parser.next(stderr);
         // Do whatever you need to here for the field
 
         // This is how you can tell if you're about to move to the next row

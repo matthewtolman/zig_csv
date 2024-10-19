@@ -431,7 +431,8 @@ std.debug.print("\nRow: ", .{});
 //
 // next does throw if it has an error.
 // next will return `false` when it hits the end of the input
-while (try parser.next(stdout)) {
+while (!parser.atEnd()) {
+    try parser.next(stdout);
     // Do whatever you need to here for the field
 
     // This is how you can tell if you're about to move to the next row
@@ -465,7 +466,8 @@ std.debug.print("\nRow: ", .{});
 //
 // next does throw if it has an error.
 // next will return `false` when it hits the end of the input
-while (try parser.next(stdout)) {
+while (!parser.atEnd()) {
+    try parser.next(stdout);
     // Do whatever you need to here for the field
 
     // This is how you can tell if you're about to move to the next row

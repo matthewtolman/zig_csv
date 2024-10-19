@@ -3,12 +3,10 @@ const CsvReadError = @import("common.zig").CsvReadError;
 
 /// Packed flags and tiny state pieces for field streams
 const FSFlags = packed struct {
-    _prev: u8 = ',',
     _in_quote: bool = false,
-    _endStr: bool = false,
-    _cr: bool = false,
-    _done: bool = false,
     _inc_row: bool = false,
+    _started: bool = false,
+    _field_start: bool = true,
 };
 
 /// Options for Partial Field Stream
@@ -29,14 +27,16 @@ pub fn FieldStreamPartial(
     comptime Writer: type,
 ) type {
     return struct {
-        pub const ReadError = Reader.Error || CsvReadError;
-        pub const WriteError = Writer.Error || error{EndOfStream};
+        pub const ReadError = Reader.Error || CsvReadError || error{EndOfStream};
+        pub const WriteError = Writer.Error;
         pub const Error = ReadError || WriteError;
 
         _reader: Reader,
         _row: usize = 0,
         _opts: PartialOpts = .{},
         _flags: FSFlags = .{},
+        _cur: ?u8 = null,
+        _next: ?u8 = null,
 
         /// Creates a new CSV Field Stream
         pub fn init(reader: Reader, opts: PartialOpts) @This() {
@@ -53,18 +53,45 @@ pub fn FieldStreamPartial(
 
         /// Returns whether the field just parsed was at the end of a row
         pub fn atRowEnd(self: @This()) bool {
-            return self._flags._done or self._flags._inc_row;
+            return self.atEnd() or self._flags._inc_row;
         }
 
         /// Returns we're at the end of the input
         pub fn atEnd(self: @This()) bool {
-            return self._flags._done;
+            return self._flags._started and self.current() == null and !self._flags._field_start;
+        }
+
+        fn consume(self: *@This()) ReadError!void {
+            self._cur = self._next;
+            if (self._next == null and self._flags._started) {
+                return;
+            }
+            self._next = self._reader.readByte() catch |err| blk: {
+                if (err == ReadError.EndOfStream) {
+                    break :blk null;
+                }
+                return err;
+            };
+        }
+
+        fn peek(self: @This()) ?u8 {
+            return self._next;
+        }
+        fn current(self: @This()) ?u8 {
+            return self._cur;
         }
 
         /// Parse the next field
-        pub fn next(self: *@This(), writer: Writer) Error!bool {
-            if (self._flags._done) {
-                return false;
+        pub fn next(self: *@This(), writer: Writer) Error!void {
+            if (!self._flags._started) {
+                try self.consume();
+                self._flags._started = true;
+                try self.consume();
+            }
+
+            if (self.current() == null) {
+                self._flags._field_start = false;
+                return;
             }
 
             if (self._flags._inc_row) {
@@ -78,66 +105,74 @@ pub fn FieldStreamPartial(
             var index: usize = 0;
             for (0..(MAX_FIELD_LEN + 1)) |i| {
                 index = i;
-                const cur = self._reader.readByte() catch |err| {
-                    if (err == WriteError.EndOfStream) {
-                        break;
-                    }
-                    self._flags._done = true;
-                    return err;
-                };
-
-                defer {
-                    self._flags._prev = cur;
-                }
-
-                const was_comma = self._flags._prev == ',' or self._flags._prev == '\r' or self._flags._prev == '\n';
-
-                if (!self._flags._in_quote and was_comma and cur == '"') {
-                    self._flags._in_quote = true;
-                } else if (cur == ',' or cur == '\r' or cur == '\n') {
-                    if (self._flags._in_quote) {
-                        try writer.writeByte(cur);
-                        continue;
-                    }
-                    self._flags._endStr = false;
-
-                    defer {
-                        self._flags._cr = cur == '\r';
-                    }
-                    if (self._flags._cr and cur != '\n') {
-                        self._flags._done = true;
-                        return CsvReadError.InvalidLineEnding;
-                    }
-
-                    if (cur == '\n') {
-                        self._flags._inc_row = true;
-                    }
-                    if (cur != '\r') {
-                        return true;
-                    }
-                } else if (self._flags._cr) {
-                    self._flags._done = true;
-                    return CsvReadError.InvalidLineEnding;
-                } else if (cur == '"') {
-                    if (self._flags._prev == '"' and self._flags._endStr) {
-                        self._flags._endStr = false;
-                        self._flags._in_quote = true;
-                        try writer.writeByte('"');
-                    } else if (self._flags._endStr) {
-                        self._flags._done = true;
-                        return CsvReadError.QuotePrematurelyTerminated;
-                    } else if (self._flags._in_quote) {
-                        self._flags._in_quote = false;
-                        self._flags._endStr = true;
+                if (self._flags._in_quote) {
+                    if (self.current()) |cur| {
+                        switch (cur) {
+                            '"' => {
+                                if (self.peek() == ',' or self.peek() == '\n' or self.peek() == '\r') {
+                                    self._flags._in_quote = false;
+                                    try self.consume();
+                                    continue;
+                                }
+                                if (self.peek() != '"') {
+                                    return CsvReadError.QuotePrematurelyTerminated;
+                                }
+                                try self.consume();
+                                try self.consume();
+                                try writer.writeByte('"');
+                            },
+                            else => |c| {
+                                try writer.writeByte(c);
+                                try self.consume();
+                            },
+                        }
                     } else {
-                        self._flags._done = true;
-                        return CsvReadError.UnexpectedQuote;
+                        return CsvReadError.UnexpectedEndOfFile;
                     }
-                } else if (self._flags._endStr) {
-                    self._flags._done = true;
-                    return CsvReadError.QuotePrematurelyTerminated;
                 } else {
-                    try writer.writeByte(cur);
+                    if (self.current()) |cur| {
+                        switch (cur) {
+                            '"' => {
+                                if (!self._flags._field_start) {
+                                    return CsvReadError.UnexpectedQuote;
+                                }
+                                self._flags._in_quote = true;
+                                self._flags._field_start = false;
+                                try self.consume();
+                            },
+                            ',',
+                            => {
+                                self._flags._field_start = true;
+                                self._flags._inc_row = false;
+                                try self.consume();
+                                return;
+                            },
+                            '\n',
+                            => {
+                                self._flags._field_start = self.peek() != null;
+                                self._flags._inc_row = true;
+                                try self.consume();
+                                return;
+                            },
+                            '\r' => {
+                                if (self.peek() != '\n') {
+                                    return CsvReadError.InvalidLineEnding;
+                                }
+                                try self.consume();
+                                try self.consume();
+                                self._flags._field_start = self.peek() != null;
+                                self._flags._inc_row = true;
+                                return;
+                            },
+                            else => |c| {
+                                self._flags._field_start = false;
+                                try writer.writeByte(c);
+                                try self.consume();
+                            },
+                        }
+                    } else {
+                        return;
+                    }
                 }
             }
 
@@ -145,14 +180,10 @@ pub fn FieldStreamPartial(
                 return CsvReadError.InternalLimitReached;
             }
 
-            self._flags._done = true;
             if (self._flags._in_quote) {
                 return CsvReadError.UnexpectedEndOfFile;
             }
-            if (self._flags._cr) {
-                return CsvReadError.InvalidLineEnding;
-            }
-            return true;
+            return;
         }
     };
 }
@@ -194,7 +225,8 @@ test "csv field streamer partial" {
     var ei: usize = 0;
     var row: usize = 0;
 
-    while (try stream.next(buff.writer())) {
+    while (!stream.atEnd()) {
+        try stream.next(buff.writer());
         defer {
             buff.clearRetainingCapacity();
             row += if (expected[ei].len == 0) 1 else 0;
@@ -204,6 +236,8 @@ test "csv field streamer partial" {
         try std.testing.expectEqualStrings(expected[ei], field);
         try std.testing.expectEqual(row, stream._row);
     }
+
+    try std.testing.expectEqual(expected.len, ei);
 }
 
 /// A CSV field stream will write fields to an output writer one field at a time
@@ -247,14 +281,13 @@ pub fn FieldStream(
         }
 
         /// Parse the next field
-        pub fn next(self: *@This(), writer: Writer) !bool {
+        pub fn next(self: *@This(), writer: Writer) !void {
             var b: [1024]u8 = undefined;
             var buff = std.io.fixedBufferStream(&b);
             const _writer = buff.writer();
 
-            const hasNext = try self._partial.next(_writer);
+            try self._partial.next(_writer);
             try writer.writeAll(buff.getWritten());
-            return hasNext;
         }
     };
 }
@@ -271,6 +304,7 @@ test "csv field streamer" {
         \\21,"Bob",24,yes,
         \\31,"New
         \\York",43,no,
+        \\4,,,no,
     );
     const reader = input.reader();
     var stream = FieldStream(
@@ -284,19 +318,22 @@ test "csv field streamer" {
         "12",     "Robert \"Bobby\" Junior", "98",  "yes",    "",
         "21",     "Bob",                     "24",  "yes",    "",
         "31",     "New\nYork",               "43",  "no",     "",
+        "4",      "",                        "",    "no",     "",
     };
 
     var ei: usize = 0;
-    var row: usize = 0;
 
-    while (try stream.next(buff.writer())) {
+    while (!stream.atEnd()) {
+        try stream.next(buff.writer());
         defer {
             buff.clearRetainingCapacity();
-            row += if (expected[ei].len == 0) 1 else 0;
             ei += 1;
         }
+        const row = @divFloor(ei, 5);
         const field = buff.items;
         try std.testing.expectEqualStrings(expected[ei], field);
         try std.testing.expectEqual(row, stream.row());
     }
+
+    try std.testing.expectEqual(expected.len, ei);
 }
