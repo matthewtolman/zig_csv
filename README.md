@@ -49,7 +49,7 @@ while (parser.next()) |row| {
 
 1. Add zcsv as a dependency in your `build.zig.zon`:
 ```bash
-zig fetch --save git+https://github.com/matthewtolman/zig_csv#master
+zig fetch --save git+https://github.com/matthewtolman/zig_csv#main
 ```
 
 2. In your `build.zig`, add the `httpz` module as a dependency to your program:
