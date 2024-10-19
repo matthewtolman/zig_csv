@@ -31,6 +31,27 @@ pub const Field = struct {
         return self._data;
     }
 
+    /// Clones memory using the same allocator that was used to make the field
+    /// Useful when wanting to keep a field's memory past the lifetime of the
+    /// row or field but wanting to keep the original row memory in-tact
+    pub fn clone(self: Field) std.mem.Allocator.Error!std.ArrayList(u8) {
+        return self._data.clone();
+    }
+
+    /// Clones memory using a specific allocator
+    /// Useful when wanting to keep a field's memory past the lifetime of the
+    /// row or field but wanting to keep the original row memory in-tact
+    pub fn cloneAlloc(
+        self: Field,
+        allocator: std.mem.Allocator,
+    ) std.mem.Allocator.Error!std.ArrayList(u8) {
+        var copy = std.ArrayList(u8).init(allocator);
+        errdefer copy.deinit();
+        try copy.resize(self._data.items.len);
+        std.mem.copyForwards(u8, copy.items, self._data.items);
+        return copy;
+    }
+
     /// Returns a slice string of the data
     /// If the data is empty or equal to "-", will return null instead of an empty string
     /// If you don't want null, use ".data()"
@@ -188,12 +209,13 @@ pub const Row = struct {
 /// Will parse the reader line-by-line instead of all at once
 /// Memory is owned by returned rows, so call Row.deinit()
 pub fn Parser(comptime Reader: type) type {
-    const Error = CsvReadError || std.mem.Allocator.Error || error{
-        EndOfInput,
-        EndOfStream,
-    };
-
     return struct {
+        pub const Error = CsvReadError || std.mem.Allocator.Error || error{
+            EndOfInput,
+            EndOfStream,
+            ReadError,
+        } || std.posix.ReadError;
+
         _allocator: std.mem.Allocator,
         err: ?Error = null,
         _done: bool = false,
@@ -266,10 +288,22 @@ pub fn Parser(comptime Reader: type) type {
                 at_row_end = self._field_stream.atRowEnd();
             }
 
+            if (self._field_stream.atEnd() and (row._data.items.len == 0 or (row._data.items.len == 1 and row._data.items[0].data().len == 0))) {
+                return Error.EndOfInput;
+            }
+
             // Return our row
             return row;
         }
     };
+}
+
+/// Initializes a new parser
+pub fn init(
+    allocator: std.mem.Allocator,
+    reader: anytype,
+) Parser(@TypeOf(reader)) {
+    return Parser(@TypeOf(reader)).init(allocator, reader);
 }
 
 test "csv parser" {

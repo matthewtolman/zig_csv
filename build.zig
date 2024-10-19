@@ -29,6 +29,10 @@ pub fn build(b: *std.Build) void {
     // running `zig build`).
     b.installArtifact(lib);
 
+    const mod = b.addModule("zcsv", .{
+        .root_source_file = b.path("src/root.zig"),
+    });
+
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const lib_unit_tests = b.addTest(.{
@@ -44,4 +48,45 @@ pub fn build(b: *std.Build) void {
     // running the unit tests.
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
+
+    const examples = [_]struct {
+        file: []const u8,
+        name: []const u8,
+        libc: bool = false,
+    }{
+        .{ .file = "examples/01_basic.zig", .name = "example_1" },
+        .{ .file = "examples/02_basic_raw.zig", .name = "example_2" },
+        .{ .file = "examples/03_basic_field_stream.zig", .name = "example_3" },
+        .{ .file = "examples/04_read_file.zig", .name = "example_4" },
+        .{ .file = "examples/05_detach_memory.zig", .name = "example_5" },
+        .{ .file = "examples/06_parse_map.zig", .name = "example_6" },
+        .{ .file = "examples/07_parse_map_copy_key.zig", .name = "example_7" },
+        .{ .file = "examples/08_write_csv.zig", .name = "example_8" },
+    };
+    {
+        for (examples) |example| {
+            const exe = b.addExecutable(.{
+                .name = example.name,
+                .target = target,
+                .optimize = optimize,
+                .root_source_file = b.path(example.file),
+            });
+            exe.root_module.addImport("zcsv", mod);
+            if (example.libc) {
+                exe.linkLibC();
+            }
+            b.installArtifact(exe);
+
+            const run_cmd = b.addRunArtifact(exe);
+            run_cmd.step.dependOn(b.getInstallStep());
+            if (b.args) |args| {
+                run_cmd.addArgs(args);
+            }
+
+            const run_step = b.step(example.name, example.file);
+            run_step.dependOn(&run_cmd.step);
+
+            test_step.dependOn(&run_cmd.step);
+        }
+    }
 }

@@ -47,6 +47,11 @@ pub fn FieldStreamPartial(
             return self._flags._done or self._flags._inc_row;
         }
 
+        /// Returns we're at the end of the input
+        pub fn atEnd(self: *@This()) bool {
+            return self._flags._done;
+        }
+
         /// Parse the next field
         pub fn next(self: *@This(), writer: Writer) !bool {
             if (self._flags._done) {
@@ -105,7 +110,7 @@ pub fn FieldStreamPartial(
                     self._flags._done = true;
                     return CsvReadError.InvalidLineEnding;
                 } else if (cur == '"') {
-                    if (self._flags._prev == '"') {
+                    if (self._flags._prev == '"' and self._flags._endStr) {
                         self._flags._endStr = false;
                         self._flags._in_quote = true;
                         try writer.writeByte('"');
@@ -155,6 +160,9 @@ test "csv field streamer partial" {
         \\21,"Bob",24,yes,
         \\31,"New
         \\York",43,no,
+        \\33,"hello""world""",400,yes,
+        \\34,"""world""",2,yes,
+        \\35,"""""""""",1,no,
     );
     const reader = input.reader();
 
@@ -169,6 +177,9 @@ test "csv field streamer partial" {
         "12",     "Robert \"Bobby\" Junior", "98",  "yes",    "",
         "21",     "Bob",                     "24",  "yes",    "",
         "31",     "New\nYork",               "43",  "no",     "",
+        "33",     "hello\"world\"",          "400", "yes",    "",
+        "34",     "\"world\"",               "2",   "yes",    "",
+        "35",     "\"\"\"\"",                "1",   "no",     "",
     };
 
     var ei: usize = 0;
@@ -209,6 +220,11 @@ pub fn FieldStream(
         /// Returns whether the field just parsed was at the end of a row
         pub fn atRowEnd(self: *@This()) bool {
             return self._flags._done or self._flags._inc_row;
+        }
+
+        /// Returns we're at the end of the input
+        pub fn atEnd(self: *@This()) bool {
+            return self._flags._done;
         }
 
         /// Parse the next field
@@ -269,7 +285,7 @@ pub fn FieldStream(
                     self._flags._done = true;
                     return CsvReadError.InvalidLineEnding;
                 } else if (cur == '"') {
-                    if (self._flags._prev == '"') {
+                    if (self._flags._prev == '"' and self._flags._endStr) {
                         self._flags._endStr = false;
                         self._flags._in_quote = true;
                         buffer[index] = '"';

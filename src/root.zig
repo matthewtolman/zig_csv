@@ -1,7 +1,9 @@
 pub const raw = @import("raw.zig");
 pub const stream = @import("stream.zig");
-pub const parser = @import("parser.zig");
+pub const column = @import("column.zig");
 pub const writer = @import("writer.zig");
+pub const map_sk = @import("map_sk.zig");
+pub const map_ck = @import("map_ck.zig");
 pub const CsvWriteError = @import("common.zig").CsvWriteError;
 pub const CsvReadError = @import("common.zig").CsvReadError;
 
@@ -14,6 +16,8 @@ test "imports" {
     var buff = std.io.fixedBufferStream(&buf);
     _ = raw.Parser.init("");
     _ = stream.FieldStream(void, void);
-    _ = parser.Parser(void);
+    _ = column.Parser(void);
     _ = try writer.row(buff.writer(), .{ 1, "hello", false });
+    _ = map_sk.Parser(void);
+    _ = map_ck.Parser(void);
 }

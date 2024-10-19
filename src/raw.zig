@@ -191,6 +191,11 @@ pub const Parser = struct {
     }
 };
 
+/// Initializes a new raw parser
+pub fn init(text: []const u8) Parser {
+    return Parser.init(text);
+}
+
 test "row iterator" {
     const testing = @import("std").testing;
 

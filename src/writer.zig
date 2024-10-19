@@ -72,13 +72,14 @@ pub fn row(writer: anytype, in_row: anytype) !void {
             try writer.writeByte(',');
         }
 
-        try writeCsvValue(writer, field);
+        try value(writer, field);
         i += 1;
     }
     try writer.writeAll("\r\n");
 }
 
-fn writeCsvValue(writer: anytype, field: anytype) !void {
+/// Writes a value to a CSV writer. Does NOT write the comma
+pub fn value(writer: anytype, field: anytype) !void {
     const FieldType = @TypeOf(field);
     const field_type_info = @typeInfo(FieldType);
 
@@ -99,14 +100,14 @@ fn writeCsvValue(writer: anytype, field: anytype) !void {
             },
             .Optional => {
                 if (field) |payload| {
-                    return writeCsvValue(writer, payload);
+                    return value(writer, payload);
                 } else {
                     return;
                 }
             },
             .ErrorUnion => {
                 if (field) |payload| {
-                    try writeCsvValue(writer, payload);
+                    try value(writer, payload);
                 } else |err| {
                     try writer.writeAll(@errorName(err));
                 }
@@ -125,13 +126,13 @@ fn writeCsvValue(writer: anytype, field: anytype) !void {
                     }
                 }
 
-                try writeCsvValue(writer, @intFromEnum(field));
+                try value(writer, @intFromEnum(field));
             },
             .Union => |info| {
                 if (info.tag_type) |UnionTagType| {
                     inline for (info.fields) |u_field| {
                         if (field == @field(UnionTagType, u_field.name)) {
-                            try writeCsvValue(writer, @field(field, u_field.name));
+                            try value(writer, @field(field, u_field.name));
                             return;
                         }
                     }
@@ -144,7 +145,7 @@ fn writeCsvValue(writer: anytype, field: anytype) !void {
                     .Enum,
                     .Union,
                     => {
-                        return writeCsvValue(writer, field.*);
+                        return value(writer, field.*);
                     },
                     else => return CsvWriteError.InvalidValueType,
                 },
@@ -192,14 +193,14 @@ fn writeCsvValue(writer: anytype, field: anytype) !void {
             },
             .optional => {
                 if (field) |payload| {
-                    return writeCsvValue(writer, payload);
+                    return value(writer, payload);
                 } else {
                     return;
                 }
             },
             .error_union => {
                 if (field) |payload| {
-                    try writeCsvValue(writer, payload);
+                    try value(writer, payload);
                 } else |err| {
                     try writer.writeAll(@errorName(err));
                 }
@@ -218,13 +219,13 @@ fn writeCsvValue(writer: anytype, field: anytype) !void {
                     }
                 }
 
-                try writeCsvValue(writer, @intFromEnum(field));
+                try value(writer, @intFromEnum(field));
             },
             .@"union" => |info| {
                 if (info.tag_type) |UnionTagType| {
                     inline for (info.fields) |u_field| {
                         if (field == @field(UnionTagType, u_field.name)) {
-                            try writeCsvValue(writer, @field(field, u_field.name));
+                            try value(writer, @field(field, u_field.name));
                             return;
                         }
                     }
@@ -237,7 +238,7 @@ fn writeCsvValue(writer: anytype, field: anytype) !void {
                     .@"enum",
                     .@"union",
                     => {
-                        return writeCsvValue(writer, field.*);
+                        return value(writer, field.*);
                     },
                     else => return CsvWriteError.InvalidValueType,
                 },
