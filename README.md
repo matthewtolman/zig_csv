@@ -26,10 +26,17 @@ for (rowData) |elem| {
 }
 
 // Basic usage reading
+
+// Get an allocator
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+defer _ = gpa.deinit();
+const allocator = gpa.allocator();
+
+// Get a reader
 const stdin = std.io.getStdIn().reader();
 
 // Make a parser
-var parser = zcsv.map_sk.init(stdin);
+var parser = zcsv.map_sk.init(allocator, stdin);
 defer parser.deinit();
 
 // Iterate over rows
@@ -118,13 +125,18 @@ const std = @import("std");
 
 // ...
 
+// Get an allocator
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+defer _ = gpa.deinit();
+const allocator = gpa.allocator();
+
 // Get a reader
 const stdin = std.io.getStdIn().reader();
 
 // Make a parser
 // If we want to copy headers, simply change map_sk to map_ck
 // We need a try since we will try to parse the headers immediately, which may fail
-var parser = try zcsv.map_sk.init(stdin);
+var parser = try zcsv.map_sk.init(allocator, stdin);
 // Note: map parsers must be deinitialized!
 // They are the only parsers (currently) which need to be deinitialized
 defer parser.deinit();
@@ -167,11 +179,16 @@ const std = @import("std");
 
 // ...
 
+// Get an allocator
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+defer _ = gpa.deinit();
+const allocator = gpa.allocator();
+
 // Get a reader
 const stdin = std.io.getStdIn().reader();
 
 // Make a parser
-var parser = zcsv.column.init(stdin);
+var parser = zcsv.column.init(allocator, stdin);
 
 // Iterate over rows
 while (parser.next()) |row| {
@@ -343,7 +360,9 @@ const csv =
     \\2,Jack,32
 ;
 
+// No allocator needed
 var parser = zcsv.raw.init(csv);
+
 // Will print:
 // Row: Field: userid Field: name Field: age 
 // Row: Field: 1 Field: "Johny ""John"" Doe" Field: 23 
@@ -400,6 +419,7 @@ const std = @import("std");
 const stdin = std.io.getStdIn().reader();
 const stdout = std.io.getStdOut().writer();
 
+// no allocator needed
 var parser = zcsv.stream.FieldStreamPartial(
     @TypeOf(stdin),
     @TypeOf(stdout),
