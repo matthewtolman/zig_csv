@@ -106,8 +106,6 @@ There are several patterns for reading CSV files provided. There are several zer
 
 > Note: None of the parsers trim whitespace from any fields at any point.
 
-> Important! If you are dealing with CSV files with extremely large fields (> 1KB) you will need to adjust default parser options! See the section "Parser Options".
-
 ### Map Parser
 The map parsers will perform memory allocations as they are creating dynamically allocated hash maps with all of the fields. The map parsers also assume that the first row is a header row. If that assumption is not the case, then it is recommended to use the column parser.
 
