@@ -1,7 +1,7 @@
 const std = @import("std");
-const p = @import("column.zig");
+const column = @import("column.zig");
 
-pub const Field = p.Field;
+pub const Field = column.Field;
 pub const Row = struct {
     _header_mem: std.ArrayList(std.ArrayList(u8)),
     _map: std.StringHashMap(Field),
@@ -33,17 +33,18 @@ pub const Row = struct {
 /// A parser that parses a CSV file into a map with keys copied for each row
 /// The lifetime of a row's keys are independent of each other
 /// The parser does hold a copy of headers which needs to be freed when done
-pub fn Parser(comptime Reader: type) type {
+pub fn Parser(comptime Reader: type, comptime opts: column.ParserOpts) type {
+    const ColParser = column.Parser(Reader, opts);
     return struct {
-        pub const Error = p.Parser(Reader).Error || error{NoHeaderForColumn};
-        _lineParser: p.Parser(Reader),
-        _header: p.Row,
+        pub const Error = ColParser.Error || error{NoHeaderForColumn};
+        _lineParser: ColParser,
+        _header: column.Row,
         _alloc: std.mem.Allocator,
         err: ?Error = null,
 
         /// Creates a new map-based parser
         pub fn init(allocator: std.mem.Allocator, reader: Reader) !@This() {
-            var parser = p.init(allocator, reader);
+            var parser = column.init(allocator, reader, opts);
             const row = parser.next();
             if (parser.err) |err| {
                 return err;
@@ -75,7 +76,7 @@ pub fn Parser(comptime Reader: type) type {
                 return null;
             }
 
-            var row: p.Row = self._lineParser.next() orelse {
+            var row: column.Row = self._lineParser.next() orelse {
                 if (self._lineParser.err) |err| {
                     self.err = err;
                 }
@@ -94,7 +95,7 @@ pub fn Parser(comptime Reader: type) type {
             };
         }
 
-        fn nextImpl(self: *@This(), row: *p.Row) Error!?Row {
+        fn nextImpl(self: *@This(), row: *column.Row) Error!?Row {
             var fields = row.fieldsMut();
             var res = Row{
                 ._header_mem = std.ArrayList(
@@ -151,8 +152,9 @@ pub fn Parser(comptime Reader: type) type {
 pub fn init(
     allocator: std.mem.Allocator,
     reader: anytype,
-) !Parser(@TypeOf(reader)) {
-    return Parser(@TypeOf(reader)).init(allocator, reader);
+    comptime opts: column.ParserOpts,
+) !Parser(@TypeOf(reader), opts) {
+    return Parser(@TypeOf(reader), opts).init(allocator, reader);
 }
 
 test "csv parse into map ck" {
@@ -172,7 +174,7 @@ test "csv parse into map ck" {
     ;
 
     var input = std.io.fixedBufferStream(buffer);
-    var parser = try init(std.testing.allocator, input.reader());
+    var parser = try init(std.testing.allocator, input.reader(), .{});
     defer parser.deinit();
 
     const expected = [_]User{

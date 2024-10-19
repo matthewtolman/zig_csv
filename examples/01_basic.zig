@@ -29,7 +29,7 @@ pub fn main() !void {
     var buff = std.io.fixedBufferStream(csv);
 
     // Get our parser for stdin
-    var parser = zcsv.column.init(allocator, buff.reader());
+    var parser = zcsv.column.init(allocator, buff.reader(), .{});
 
     // Parse a new row
     while (parser.next()) |row| {

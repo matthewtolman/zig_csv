@@ -12,7 +12,7 @@ pub fn main() !void {
         \\"John","doe",no
     ;
 
-    var parser = zcsv.raw.Parser.init(buf);
+    var parser = zcsv.raw.init(buf);
     while (parser.next()) |row| {
         std.log.info("New row", .{});
         var iter = row.iter();

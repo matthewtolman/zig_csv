@@ -36,7 +36,7 @@ const allocator = gpa.allocator();
 const stdin = std.io.getStdIn().reader();
 
 // Make a parser
-var parser = zcsv.map_sk.init(allocator, stdin);
+var parser = zcsv.map_sk.init(allocator, stdin, .{});
 defer parser.deinit();
 
 // Iterate over rows
@@ -106,6 +106,8 @@ There are several patterns for reading CSV files provided. There are several zer
 
 > Note: None of the parsers trim whitespace from any fields at any point.
 
+> Important! If you are dealing with CSV files with extremely large fields (> 1KB) you will need to adjust default parser options! See the section "Parser Options".
+
 ### Map Parser
 The map parsers will perform memory allocations as they are creating dynamically allocated hash maps with all of the fields. The map parsers also assume that the first row is a header row. If that assumption is not the case, then it is recommended to use the column parser.
 
@@ -136,7 +138,7 @@ const stdin = std.io.getStdIn().reader();
 // Make a parser
 // If we want to copy headers, simply change map_sk to map_ck
 // We need a try since we will try to parse the headers immediately, which may fail
-var parser = try zcsv.map_sk.init(allocator, stdin);
+var parser = try zcsv.map_sk.init(allocator, stdin, .{});
 // Note: map parsers must be deinitialized!
 // They are the only parsers (currently) which need to be deinitialized
 defer parser.deinit();
@@ -188,7 +190,7 @@ const allocator = gpa.allocator();
 const stdin = std.io.getStdIn().reader();
 
 // Make a parser
-var parser = zcsv.column.init(allocator, stdin);
+var parser = zcsv.column.init(allocator, stdin, .{});
 
 // Iterate over rows
 while (parser.next()) |row| {
@@ -243,9 +245,200 @@ if (column.err) |err| {
 
 ```
 
-#### Memory Lifetimes
+### Raw Parser
 
-Slices returned by fields have their underlying memory tied to the lifetime of the row's memory. This means the following will result in a use-after-free:
+The raw parser is a zero-allocation column. Unlike the allocating parser pattern, this parser does not unescape quoted strings or converts values into other types. Instead, it identifies the boundaries of each field start and end and returns slices to those boundaries. This means if you have the CSV row `"Jack ""Jim"" Smith",12` you will end up with the fields `"Jack ""Jim"" Smith"` and `12`. (Note that the surrounding quotes are part of the resulting output).
+
+Addtionally, the raw parser does not work with readers. Instead, it requires the entire CSV file to be loaded into memory. This is because it returns slices into the CSV memory rather than return newly allocated memory.
+
+Below is an example of how to use the raw column.
+
+```zig
+const zcsv = @import("zcsv");
+
+/// ...
+
+const csv =
+    \\userid,name,age
+    \\1,"Johny ""John"" Doe",23
+    \\2,Jack,32
+;
+
+// No allocator needed
+var parser = zcsv.raw.init(csv);
+
+// Will print:
+// Row: Field: userid Field: name Field: age 
+// Row: Field: 1 Field: "Johny ""John"" Doe" Field: 23 
+// Row: Field: 2 Field: Jack Field: 32 
+//
+// Notice that the quotes are included in the output
+while (parser.next()) |row| {
+    // No memory deallocation needed!
+
+    std.io.debug("\nRow: ");
+
+    // Get an iterator for the fields in a row
+    var iter = row.iter();
+
+    // Iterate over the fields
+    while (iter.next()) |f| {
+        std.io.debug("Field: {s} ", f);
+    }
+}
+
+// Detect parse errors
+if (column.err) |err| {
+    return err;
+}
+```
+
+### Field Streamer
+
+The field streamer will write each filed into a writer. It does not try to indicate the end of a row to the writer. Instead, it exposes state in the form of the `atRowEnd` method. 
+
+There are two sub-approaches depending on validation. The first is partial fields (through `FieldStreamPartial`) and the next is fully-valid fields only (through `FieldStream`).
+
+> Note: the Parser uses the `FieldStream` behind the scenes
+
+With the partial fields each byte is written as it is processed without buffering. This means that if there is an invalid field (e.g. `John"Doe"`), then some of the data will be written to the writer before the parse error is detected. However, this also means there is no internal buffer limiting field size or taking up stack memory. A "no infinite loop" limit is imposed of 2^32 bytes per field. This may be adjusted if desired (for whatever reason).
+
+In contrast, the fully-valid field only model will buffer fields internally and ensure they are valid before writing them to the stream. When it does write to the writer, it will write the entire field at once. This also has the advantage that writers which require memory allocations will perform fewer allocations on average.
+
+However, because `FixedStream` needs an in-memory buffer we do need to keep that buffer in the stack. The size of the buffer must be provided at compile time.
+
+Both field streamers also provide a row count with the `row` property.
+
+Field streamers are primarily meant to be used inside a more complex parser. As such, their usage and interface is less user-friendly, and they can offer more detail than is necessary. When possible, use one of the other provided parsers.
+
+Below is example usage of the partial field stream:
+
+```zig
+const zcsv = @import("zcsv");
+const std = @import("std");
+
+/// ...
+
+// Get reader and writer
+const stdin = std.io.getStdIn().reader();
+const stdout = std.io.getStdOut().writer();
+
+// no allocator needed
+var parser = zcsv.stream.FieldStreamPartial(
+    @TypeOf(stdin),
+    @TypeOf(stdout),
+).init(stdin, .{});
+
+std.debug.print("\nRow: ", .{});
+// The writer is passed to each call to next
+// This allows us to use a different writer per field
+//
+// next does throw if it has an error.
+// next will return `false` when it hits the end of the input
+while (!parser.atEnd()) {
+    try parser.next(stdout);
+    // Do whatever you need to here for the field
+
+    // This is how you can tell if you're about to move to the next row
+    // Note that we aren't at the next row, just that we're about to move
+    if (column.atRowEnd()) {
+        std.debug.print("\nRow: ", .{});
+    }
+}
+```
+
+Below is example usage of the full field stream. You'll notice that there is barely any difference. This is intetional since we want to be able to switch between them quickly.
+
+```zig
+const zcsv = @import("zcsv");
+const std = @import("std");
+
+/// ...
+
+// Get reader and writer
+const stdin = std.io.getStdIn().reader();
+const stdout = std.io.getStdOut().writer();
+
+var parser = zcsv.stream.FieldStream(
+    @TypeOf(stdin),
+    @TypeOf(stdout),
+    1_024, // Internal buffer size
+).init(stdin); // No second parameter here
+
+std.debug.print("\nRow: ", .{});
+// The writer is passed to each call to next
+// This allows us to use a different writer per field
+//
+// next does throw if it has an error.
+// next will return `false` when it hits the end of the input
+while (!parser.atEnd()) {
+    try parser.next(stdout);
+    // Do whatever you need to here for the field
+
+    // This is how you can tell if you're about to move to the next row
+    // Note that we aren't at the next row, just that we're about to move
+    if (column.atRowEnd()) {
+        std.debug.print("\nRow: ", .{});
+    }
+}
+```
+
+## Allocating Parser Details
+
+The allocating parsers have additional details concerning configuration options and memory lifetimes. These details affect the column and map parsers (both `map_sk` and `map_ck`).
+
+### Parser Options
+
+For allocating parsers, there is a compile-time options struct that will determine the underlying characteristics of the parser. This includes choosing between either the `FieldStream` or `FieldStreamPartial` for the internal parsing, as well as determining either the internal buffer limit or infinite-loop safeguard sizes.
+
+By default, the parsers will use `FieldStreamPartial`. When doing so, the parsers will allocate an internal "field receiver" buffer per row, and then will copy the data out of that buffer into the fields proper. The initial capacity of this buffer can be specified, otherwise it uses the default capacity provided by the standard.
+
+This method allows for arbitrary field sizes without knowing anything about the incoming data set. This provides for an easy "getting started" experience, but it does so at the cost of performance, especially in regards to the number of memory allocations.
+
+> Note: By default there is a 4GB limit per field as part of an infinite-loop safeguard. If you need to change this, you can "disable" it with the option struct `.{ .partial = .{ max_len = std.math.maxInt(usize) } }`. Do note that you will need to have a lot of memory on your computer if you disable this.
+
+In particular, for CSV files with only a single column per row, this will result in `R*log(C)+R` allocations where `R` is the number of  and `C` is the length of each column. The extra `+R` is there to account for the final column value allocation. For CSV files with multiple columns per row, this will result in `R*log(C_max)+count(F)` allocations where `C_max` is the maximum column length per row and `count(F)` is the number of fields. This is obviously not ideal, especially since in practice you should see performance similar to `Nlog(N)` for very large columns.
+
+There are a few optimization paths going forward. The first is to optimize the intermediate buffer to have fewer allocations. This can be done by setting the capacity. If we guess correctly, then we can go from `R*log(C_max)` allocations to `R` allocations, thus giving us the formula `R+count(F)` for allocations.
+
+Alternatively, if we know that our data will never exceed a threshold, then we can move our internal buffer from the heap to the stack. This removes the `R*log(C_max)` allocations entirely at the cost of having an error if our data ever exceeds the stack limit. This gives us `count(F)` allocations.
+
+#### Maximum field size (not on the stack)
+
+By default, the `FieldStreamPartial` will have a maximum of 4GB per field as part of an infinite-loop detection safeguard. While this will allow you to parse almost any CSV file, it may do so at the cost of availability and out of memory. To lower this limit, we can simply lower the maximum length to something more sane.
+
+```zig
+var parser = zscv.column(reader, .{
+    // Use a more sane max 1KB per field (though it's still big)
+    .buffer = .{ .heap = .{ .max_len = 1_024 } },
+});
+```
+
+#### Adjusting capacity
+
+To adjust capacity, we simply need to provide the `capacity` parameter to our partil options. A "null" or "0" value will disable capacity initialization. Any other value will ensure our internal receiver array list has an initial capacity at least that big. Example:
+
+```zig
+var parser = zscv.column(reader, .{
+    // Use a 256 byte initial capacity for parsing fields
+    // Capacity resets to 256 bytes on each row
+    .buffer = .{ .heap = .{ .capacity = 256 } },
+});
+```
+
+#### Stack based buffer
+
+Another optimization is to switch from a heap-based intermediate buffer to a stack-based intermediate buffer. This does require we have a much more reasonable maximum limit than 4GB per field. We can switch to using the stack with the following:
+
+```zig
+var parser = zscv.column(reader, .{
+    .buffer = .{ .stack = .{ .max_len = 1_024 } },
+});
+```
+
+### Memory Lifetimes
+
+Slices returned by allocated fields have their underlying memory tied to the lifetime of the row's memory. This means the following will result in a use-after-free:
 
 ```zig
 // Use after free example, Don't do this!
@@ -339,142 +532,5 @@ while(true) {
 
 // Oh no! Use after free!
 std.debug.print("{s}", .{firstField.items});
-```
-
-### Raw Parser
-
-The raw parser is a zero-allocation column. Unlike the allocating parser pattern, this parser does not unescape quoted strings or converts values into other types. Instead, it identifies the boundaries of each field start and end and returns slices to those boundaries. This means if you have the CSV row `"Jack ""Jim"" Smith",12` you will end up with the fields `"Jack ""Jim"" Smith"` and `12`. (Note that the surrounding quotes are part of the resulting output).
-
-Addtionally, the raw parser does not work with readers. Instead, it requires the entire CSV file to be loaded into memory. This is because it returns slices into the CSV memory rather than return newly allocated memory.
-
-Below is an example of how to use the raw column.
-
-```zig
-const zcsv = @import("zcsv");
-
-/// ...
-
-const csv =
-    \\userid,name,age
-    \\1,"Johny ""John"" Doe",23
-    \\2,Jack,32
-;
-
-// No allocator needed
-var parser = zcsv.raw.init(csv);
-
-// Will print:
-// Row: Field: userid Field: name Field: age 
-// Row: Field: 1 Field: "Johny ""John"" Doe" Field: 23 
-// Row: Field: 2 Field: Jack Field: 32 
-//
-// Notice that the quotes are included in the output
-while (parser.next()) |row| {
-    // No memory deallocation needed!
-
-    std.io.debug("\nRow: ");
-
-    // Get an iterator for the fields in a row
-    var iter = row.iter();
-
-    // Iterate over the fields
-    while (iter.next()) |f| {
-        std.io.debug("Field: {s} ", f);
-    }
-}
-
-// Detect parse errors
-if (column.err) |err| {
-    return err;
-}
-```
-
-### Field Streamer
-
-The field streamer will write each filed into a writer. It does not try to indicate the end of a row to the writer. Instead, it exposes state in the form of the `atRowEnd` method. 
-
-There are two sub-approaches depending on validation. The first is partial fields (through `FieldStreamPartial`) and the next is fully-valid fields only (through `FieldStream`).
-
-> Note: the Parser uses the `FieldStream` behind the scenes
-
-With the partial fields each byte is written as it is processed without buffering. This means that if there is an invalid field (e.g. `John"Doe"`), then some of the data will be written to the writer before the parse error is detected. However, this also means there is no internal buffer limiting field size or taking up stack memory. A "no infinite loop" limit is imposed of 2^32 bytes per field. This may be adjusted if desired (for whatever reason).
-
-In contrast, the fully-valid field only model will buffer fields internally and ensure they are valid before writing them to the stream. When it does write to the writer, it will write the entire field at once. This also has the advantage that writers which require memory allocations will perform fewer allocations on average.
-
-However, because `FixedStream` needs an in-memory buffer we do need to keep that buffer in the stack. The buffer used is 1,024 bytes. This means that any fields larger than 1,024 bytes will cause a read error.
-
-Both field streamers also provide a row count with the `row` property.
-
-Field streamers are primarily meant to be used inside a more complex parser. As such, their usage and interface is less user-friendly, and they can offer more detail than is necessary. When possible, use one of the other provided parsers.
-
-Below is example usage of the partial field stream:
-
-```zig
-const zcsv = @import("zcsv");
-const std = @import("std");
-
-/// ...
-
-// Get reader and writer
-const stdin = std.io.getStdIn().reader();
-const stdout = std.io.getStdOut().writer();
-
-// no allocator needed
-var parser = zcsv.stream.FieldStreamPartial(
-    @TypeOf(stdin),
-    @TypeOf(stdout),
-).init(stdin, .{});
-
-std.debug.print("\nRow: ", .{});
-// The writer is passed to each call to next
-// This allows us to use a different writer per field
-//
-// next does throw if it has an error.
-// next will return `false` when it hits the end of the input
-while (!parser.atEnd()) {
-    try parser.next(stdout);
-    // Do whatever you need to here for the field
-
-    // This is how you can tell if you're about to move to the next row
-    // Note that we aren't at the next row, just that we're about to move
-    if (column.atRowEnd()) {
-        std.debug.print("\nRow: ", .{});
-    }
-}
-```
-
-Below is example usage of the full field stream. You'll notice that there is barely any difference. This is intetional since we want to be able to switch between them quickly.
-
-```zig
-const zcsv = @import("zcsv");
-const std = @import("std");
-
-/// ...
-
-// Get reader and writer
-const stdin = std.io.getStdIn().reader();
-const stdout = std.io.getStdOut().writer();
-
-var parser = zcsv.stream.FieldStream(
-    @TypeOf(stdin),
-    @TypeOf(stdout),
-).init(stdin); // No second parameter here
-
-std.debug.print("\nRow: ", .{});
-// The writer is passed to each call to next
-// This allows us to use a different writer per field
-//
-// next does throw if it has an error.
-// next will return `false` when it hits the end of the input
-while (!parser.atEnd()) {
-    try parser.next(stdout);
-    // Do whatever you need to here for the field
-
-    // This is how you can tell if you're about to move to the next row
-    // Note that we aren't at the next row, just that we're about to move
-    if (column.atRowEnd()) {
-        std.debug.print("\nRow: ", .{});
-    }
-}
 ```
 

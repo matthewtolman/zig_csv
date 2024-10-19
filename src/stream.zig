@@ -265,11 +265,16 @@ test "csv field streamer partial" {
 /// A CSV field stream will write fields to an output writer one field at a time
 /// To know the row of the last read field, use the "row" property (starts at 0)
 /// The next function may error (e.g. parse error or stream error)
-/// Uses a 1,024 character buffer to avoid partial field writes on parse errors
+/// The buffer size must be passed in at compile time
 pub fn FieldStream(
     comptime Reader: type,
     comptime Writer: type,
+    comptime buffer_size: usize,
 ) type {
+    if (comptime buffer_size == 0) {
+        @compileError("A non-zero buffer size must be given");
+    }
+
     const Fs = FieldStreamPartial(
         Reader,
         std.io.FixedBufferStream([]u8).Writer,
@@ -283,7 +288,7 @@ pub fn FieldStream(
         /// Creates a new CSV Field Stream
         pub fn init(reader: Reader) @This() {
             return .{
-                ._partial = Fs.init(reader, .{ .max_len = 1_024 }),
+                ._partial = Fs.init(reader, .{ .max_len = buffer_size }),
             };
         }
 
@@ -299,7 +304,7 @@ pub fn FieldStream(
 
         /// Parse the next field
         pub fn next(self: *@This(), writer: Writer) !void {
-            var b: [1024]u8 = undefined;
+            var b: [buffer_size]u8 = undefined;
             var buff = std.io.fixedBufferStream(&b);
             const _writer = buff.writer();
 
@@ -327,6 +332,7 @@ test "csv field streamer" {
     var stream = FieldStream(
         @TypeOf(reader),
         @TypeOf(buff.writer()),
+        1_024,
     ).init(reader);
 
     const expected = [_][]const u8{

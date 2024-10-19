@@ -66,7 +66,7 @@ pub fn parseFile(alloc: std.mem.Allocator, fileName: []const u8) !std.ArrayList(
     errdefer res.deinit();
 
     // We can read directly from our file reader
-    var parser = zcsv.column.init(alloc, file.reader());
+    var parser = zcsv.column.init(alloc, file.reader(), .{});
 
     var columns = std.StringHashMap(usize).init(alloc);
     defer columns.deinit();

@@ -17,9 +17,9 @@ test "imports" {
     const Reader = @TypeOf(buff.reader());
     const Writer = @TypeOf(buff.writer());
     _ = raw.Parser.init("");
-    _ = stream.FieldStream(Reader, Writer);
-    _ = column.Parser(Reader);
+    _ = stream.FieldStream(Reader, Writer, 1_024);
+    _ = column.Parser(Reader, .{});
     _ = try writer.row(buff.writer(), .{ 1, "hello", false });
-    _ = map_sk.Parser(Reader);
-    _ = map_ck.Parser(Reader);
+    _ = map_sk.Parser(Reader, .{});
+    _ = map_ck.Parser(Reader, .{});
 }

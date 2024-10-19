@@ -66,7 +66,7 @@ pub fn parseFile(alloc: std.mem.Allocator, fileName: []const u8) !std.ArrayList(
     errdefer res.deinit();
 
     // We can read directly from our file reader
-    var parser = try zcsv.map_sk.init(alloc, file.reader());
+    var parser = try zcsv.map_sk.init(alloc, file.reader(), .{});
 
     // We do need to deinitialize this parser to free it's copy of the header
     defer parser.deinit();

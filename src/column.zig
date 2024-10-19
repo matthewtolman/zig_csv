@@ -206,11 +206,41 @@ pub const Row = struct {
     }
 };
 
+/// Options for using FieldStream as underlying parser
+pub const FullStreamOpts = struct {
+    /// size of the internal buffer
+    max_len: usize = 1_024,
+};
+
+/// Options for using FieldStreamPartial as underlying parser
+pub const PartialStreamOpts = struct {
+    /// Infinite loop safeguard for maximum field size
+    max_len: usize = 4_294_967_296,
+    /// Initial guess for reserving capacity (null = no reserving done)
+    capacity: ?usize = null,
+};
+
+/// Options union for parser options
+pub const ParserOptsUnion = union(enum) {
+    heap: PartialStreamOpts,
+    stack: FullStreamOpts,
+};
+
+/// Parser options
+pub const ParserOpts = struct {
+    /// Field stream parser options
+    buffer: ParserOptsUnion = .{ .heap = .{} },
+};
+
 /// Creates a CSV parser over a reader that stores parsed data on the heap
 /// Will parse the reader line-by-line instead of all at once
 /// Memory is owned by returned rows, so call Row.deinit()
-pub fn Parser(comptime Reader: type) type {
-    const Fs = stream.FieldStream(Reader, std.ArrayList(u8).Writer);
+pub fn Parser(comptime Reader: type, comptime opts: ParserOpts) type {
+    const Writer = std.ArrayList(u8).Writer;
+    const Fs = comptime switch (opts.buffer) {
+        .stack => |o| stream.FieldStream(Reader, Writer, o.max_len),
+        .heap => |_| stream.FieldStreamPartial(Reader, Writer),
+    };
     return struct {
         pub const Error = Fs.Error || std.mem.Allocator.Error || error{
             EndOfInput,
@@ -221,14 +251,20 @@ pub fn Parser(comptime Reader: type) type {
         _allocator: std.mem.Allocator,
         err: ?Error = null,
         _done: bool = false,
-        _field_stream: stream.FieldStream(Reader, std.ArrayList(u8).Writer),
+        _buffer: Fs,
 
         /// Initializes a CSV parser with an allocator and a reader
         pub fn init(allocator: std.mem.Allocator, reader: Reader) @This() {
-            return .{
-                ._allocator = allocator,
-                ._field_stream = Fs.init(reader),
-            };
+            switch (comptime opts.buffer) {
+                .stack => |_| return .{
+                    ._allocator = allocator,
+                    ._buffer = Fs.init(reader),
+                },
+                .heap => |o| return .{
+                    ._allocator = allocator,
+                    ._buffer = Fs.init(reader, .{ .max_len = o.max_len }),
+                },
+            }
         }
 
         /// Returns the next row in the CSV file
@@ -255,7 +291,7 @@ pub fn Parser(comptime Reader: type) type {
                 return err;
             }
 
-            if (self._field_stream.atEnd()) {
+            if (self._buffer.atEnd()) {
                 return null;
             }
 
@@ -265,23 +301,57 @@ pub fn Parser(comptime Reader: type) type {
 
             var at_row_end = false;
 
-            // We're only getting the next row, so only iterate over fields
-            // until we reach the end of the row
-            while (!at_row_end) {
-                var field = Field{
-                    ._data = std.ArrayList(u8).init(self._allocator),
-                };
+            switch (comptime opts.buffer) {
+                .heap => |p| {
+                    // Internal buffer for receiving fields
+                    // This should minimize the number of allocations when using
+                    // the partial buffer
+                    var buffer = std.ArrayList(u8).init(self._allocator);
+                    defer buffer.deinit();
 
-                // Clean up our field memory if we have an error
-                errdefer field.deinit();
+                    if (comptime p.capacity) |capacity| {
+                        try buffer.ensureTotalCapacity(capacity);
+                    }
 
-                try self._field_stream.next(field._data.writer());
+                    // We're only getting the next row, so only iterate over fields
+                    // until we reach the end of the row
+                    while (!at_row_end) {
+                        defer buffer.clearRetainingCapacity();
 
-                // try adding our field to our row
-                try row._data.append(field);
-                at_row_end = self._field_stream.atRowEnd();
+                        try self._buffer.next(buffer.writer());
+
+                        var field = Field{
+                            ._data = std.ArrayList(u8).init(self._allocator),
+                        };
+
+                        // Clean up our field memory if we have an error
+                        errdefer field.deinit();
+
+                        // Copy over just what's needed
+                        try field._data.appendSlice(buffer.items);
+
+                        // try adding our field to our row
+                        try row._data.append(field);
+                        at_row_end = self._buffer.atRowEnd();
+                    }
+                },
+                else => {
+                    while (!at_row_end) {
+                        // Clean up our field memory if we have an error
+                        var field = Field{
+                            ._data = std.ArrayList(u8).init(self._allocator),
+                        };
+
+                        errdefer field.deinit();
+
+                        try self._buffer.next(field._data.writer());
+
+                        // try adding our field to our row
+                        try row._data.append(field);
+                        at_row_end = self._buffer.atRowEnd();
+                    }
+                },
             }
-
             // Return our row
             return row;
         }
@@ -292,11 +362,12 @@ pub fn Parser(comptime Reader: type) type {
 pub fn init(
     allocator: std.mem.Allocator,
     reader: anytype,
-) Parser(@TypeOf(reader)) {
-    return Parser(@TypeOf(reader)).init(allocator, reader);
+    comptime opts: ParserOpts,
+) Parser(@TypeOf(reader), opts) {
+    return Parser(@TypeOf(reader), opts).init(allocator, reader);
 }
 
-test "csv parser" {
+test "csv parser heap no buffer" {
     const buffer =
         \\userid,name,age,active
         \\1,"John ""Johnny"" Doe",32,yes
@@ -306,6 +377,85 @@ test "csv parser" {
     var input = std.io.fixedBufferStream(buffer);
     var parser = Parser(
         @TypeOf(input.reader()),
+        .{ .buffer = .{ .heap = .{} } },
+    ).init(std.testing.allocator, input.reader());
+
+    const expected = [_][4][]const u8{
+        [_][]const u8{ "userid", "name", "age", "active" },
+        [_][]const u8{ "1", "John \"Johnny\" Doe", "32", "yes" },
+        [_][]const u8{ "2", "Smith, Jack", "53", "no" },
+        [_][]const u8{ "3", "Peter", "18", "yes" },
+    };
+
+    var er: usize = 0;
+    while (parser.next()) |row| {
+        defer {
+            row.deinit();
+            er += 1;
+        }
+        const e_row = expected[er];
+
+        var ef: usize = 0;
+        var iter = row.iter();
+        while (iter.next()) |field| {
+            defer {
+                ef += 1;
+            }
+            try std.testing.expectEqualStrings(e_row[ef], field.data());
+        }
+    }
+}
+
+test "csv parser stack buffer" {
+    const buffer =
+        \\userid,name,age,active
+        \\1,"John ""Johnny"" Doe",32,yes
+        \\2,"Smith, Jack",53,no
+        \\3,Peter,18,yes
+    ;
+    var input = std.io.fixedBufferStream(buffer);
+    var parser = Parser(
+        @TypeOf(input.reader()),
+        .{ .buffer = .{ .heap = .{ .capacity = 35 } } },
+    ).init(std.testing.allocator, input.reader());
+
+    const expected = [_][4][]const u8{
+        [_][]const u8{ "userid", "name", "age", "active" },
+        [_][]const u8{ "1", "John \"Johnny\" Doe", "32", "yes" },
+        [_][]const u8{ "2", "Smith, Jack", "53", "no" },
+        [_][]const u8{ "3", "Peter", "18", "yes" },
+    };
+
+    var er: usize = 0;
+    while (parser.next()) |row| {
+        defer {
+            row.deinit();
+            er += 1;
+        }
+        const e_row = expected[er];
+
+        var ef: usize = 0;
+        var iter = row.iter();
+        while (iter.next()) |field| {
+            defer {
+                ef += 1;
+            }
+            try std.testing.expectEqualStrings(e_row[ef], field.data());
+        }
+    }
+}
+
+test "csv parser stack" {
+    const buffer =
+        \\userid,name,age,active
+        \\1,"John ""Johnny"" Doe",32,yes
+        \\2,"Smith, Jack",53,no
+        \\3,Peter,18,yes
+    ;
+    var input = std.io.fixedBufferStream(buffer);
+    var parser = Parser(
+        @TypeOf(input.reader()),
+        .{ .buffer = .{ .stack = .{ .max_len = 256 } } },
     ).init(std.testing.allocator, input.reader());
 
     const expected = [_][4][]const u8{
@@ -351,9 +501,10 @@ test "csv parse into value" {
     ;
 
     var input = std.io.fixedBufferStream(buffer);
-    var parser = Parser(@TypeOf(input.reader())).init(
+    var parser = init(
         std.testing.allocator,
         input.reader(),
+        .{},
     );
 
     const expected = [_]User{
@@ -413,9 +564,10 @@ test "csv detach memory" {
     ;
 
     var input = std.io.fixedBufferStream(buffer);
-    var parser = Parser(@TypeOf(input.reader())).init(
+    var parser = init(
         std.testing.allocator,
         input.reader(),
+        .{},
     );
 
     const expected = [_]User{
