@@ -11,6 +11,7 @@ pub const Row = struct {
     }
 
     /// Frees the associated memory
+    /// Does NOT free map keys since that is held by the parser
     pub fn deinit(self: @This()) void {
         var valIt = self._map.valueIterator();
         while (valIt.next()) |v| {
@@ -54,13 +55,15 @@ pub fn Parser(comptime Reader: type) type {
         }
 
         /// Frees the header-related memory
-        /// Note: this will free the memory for all keys for any maps returned by next
+        /// Note: this will free the memory for all keys for any maps returned
+        /// by next
         pub fn deinit(self: @This()) void {
             self._header.deinit();
         }
 
         /// Returns a map of the next row
-        /// Both the map and the values of the map need to be cleaned by the caller
+        /// Both the map and the values of the map need to be cleaned by the
+        /// caller
         pub fn next(self: *@This()) ?Row {
             if (self.err) |_| {
                 return null;
@@ -85,6 +88,8 @@ pub fn Parser(comptime Reader: type) type {
             };
         }
 
+        /// Internal next method that will return errors
+        /// Error returning is used so we can use errdefer to clean memory
         fn nextImpl(self: *@This(), row: *p.Row) Error!?Row {
             var fields = row.fieldsMut();
             var res = Row{
@@ -106,7 +111,10 @@ pub fn Parser(comptime Reader: type) type {
                 }
 
                 // Put our field in the memory and reattach memory scope
-                try res._map.put(header, Field{ ._data = fields[i].detachMemory() });
+                try res._map.put(
+                    header,
+                    Field{ ._data = fields[i].detachMemory() },
+                );
             }
 
             return res;
@@ -119,7 +127,10 @@ pub fn Parser(comptime Reader: type) type {
 /// The map will have each value on the heap, and the key lifetimes are the
 /// same as the parser's lifetime. This avoids memory copies per row, but it
 /// does mean that the parser must outlive the lifetime of each row.
-pub fn init(allocator: std.mem.Allocator, reader: anytype) !Parser(@TypeOf(reader)) {
+pub fn init(
+    allocator: std.mem.Allocator,
+    reader: anytype,
+) !Parser(@TypeOf(reader)) {
     return Parser(@TypeOf(reader)).init(allocator, reader);
 }
 
@@ -144,7 +155,12 @@ test "csv parse into map sk" {
     defer parser.deinit();
 
     const expected = [_]User{
-        User{ .id = 1, .name = "John \"Johnny\" Doe", .age = 32, .active = true },
+        User{
+            .id = 1,
+            .name = "John \"Johnny\" Doe",
+            .age = 32,
+            .active = true,
+        },
         User{ .id = 2, .name = "Smith, Jack", .age = 53, .active = false },
         User{ .id = 3, .name = "Peter", .age = 18, .active = true },
         User{ .id = 4, .name = null, .age = null, .active = false },

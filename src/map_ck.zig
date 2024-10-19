@@ -6,10 +6,12 @@ pub const Row = struct {
     _header_mem: std.ArrayList(std.ArrayList(u8)),
     _map: std.StringHashMap(Field),
 
+    /// Returns a const pointer to the underlying map
     pub fn data(self: *const @This()) *const std.StringHashMap(Field) {
         return &self._map;
     }
 
+    /// Cleans up the data held by the row (including the copy of keys)
     pub fn deinit(self: @This()) void {
         {
             var valIt = self._map.valueIterator();
@@ -59,13 +61,15 @@ pub fn Parser(comptime Reader: type) type {
         }
 
         /// Frees the header-related memory
-        /// Note: this will free the memory for all keys for any maps returned by next
+        /// Note: this will free the memory for all keys for any maps returned
+        /// by next
         pub fn deinit(self: @This()) void {
             self._header.deinit();
         }
 
         /// Returns a map of the next row
-        /// Both the map and the values of the map need to be cleaned by the caller
+        /// Both the map and the values of the map need to be cleaned by the
+        /// caller
         pub fn next(self: *@This()) ?Row {
             if (self.err) |_| {
                 return null;
@@ -93,7 +97,9 @@ pub fn Parser(comptime Reader: type) type {
         fn nextImpl(self: *@This(), row: *p.Row) Error!?Row {
             var fields = row.fieldsMut();
             var res = Row{
-                ._header_mem = std.ArrayList(std.ArrayList(u8)).init(self._alloc),
+                ._header_mem = std.ArrayList(
+                    std.ArrayList(u8),
+                ).init(self._alloc),
                 ._map = std.StringHashMap(Field).init(self._alloc),
             };
             // Clean up our memory
@@ -127,7 +133,10 @@ pub fn Parser(comptime Reader: type) type {
                 }
 
                 // Put our field in the memory and reattach memory scope
-                try res._map.put(header, Field{ ._data = fields[i].detachMemory() });
+                try res._map.put(
+                    header,
+                    Field{ ._data = fields[i].detachMemory() },
+                );
             }
 
             return res;
@@ -139,7 +148,10 @@ pub fn Parser(comptime Reader: type) type {
 /// each row
 /// The lifetime of a row's keys are independent of each other
 /// The parser does hold a copy of headers which needs to be freed when done
-pub fn init(allocator: std.mem.Allocator, reader: anytype) !Parser(@TypeOf(reader)) {
+pub fn init(
+    allocator: std.mem.Allocator,
+    reader: anytype,
+) !Parser(@TypeOf(reader)) {
     return Parser(@TypeOf(reader)).init(allocator, reader);
 }
 
@@ -164,7 +176,12 @@ test "csv parse into map ck" {
     defer parser.deinit();
 
     const expected = [_]User{
-        User{ .id = 1, .name = "John \"Johnny\" Doe", .age = 32, .active = true },
+        User{
+            .id = 1,
+            .name = "John \"Johnny\" Doe",
+            .age = 32,
+            .active = true,
+        },
         User{ .id = 2, .name = "Smith, Jack", .age = 53, .active = false },
         User{ .id = 3, .name = "Peter", .age = 18, .active = true },
         User{ .id = 4, .name = null, .age = null, .active = false },

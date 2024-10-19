@@ -4,8 +4,10 @@ const CsvReadError = @import("common.zig").CsvReadError;
 /// Packed flags and tiny state pieces for field streams
 const FSFlags = packed struct {
     _in_quote: bool = false,
-    _inc_row: bool = false,
+    _row_end: bool = false,
     _started: bool = false,
+    // We always start with a field
+    // This also means that an empty file will become one "null" field
     _field_start: bool = true,
 };
 
@@ -32,11 +34,10 @@ pub fn FieldStreamPartial(
         pub const Error = ReadError || WriteError;
 
         _reader: Reader,
-        _row: usize = 0,
-        _opts: PartialOpts = .{},
-        _flags: FSFlags = .{},
         _cur: ?u8 = null,
         _next: ?u8 = null,
+        _opts: PartialOpts = .{},
+        _flags: FSFlags = .{},
 
         /// Creates a new CSV Field Stream
         pub fn init(reader: Reader, opts: PartialOpts) @This() {
@@ -46,27 +47,42 @@ pub fn FieldStreamPartial(
             };
         }
 
-        /// Returns the current row number
-        pub fn row(self: @This()) usize {
-            return self._row;
-        }
-
         /// Returns whether the field just parsed was at the end of a row
         pub fn atRowEnd(self: @This()) bool {
-            return self.atEnd() or self._flags._inc_row;
+            return self.atEnd() or self._flags._row_end;
         }
 
         /// Returns we're at the end of the input
         pub fn atEnd(self: @This()) bool {
-            return self._flags._started and self.current() == null and !self._flags._field_start;
+            // If we haven't started then we can't be at the end yet
+            if (!self._flags._started) {
+                return false;
+            }
+
+            // If we're starting a new feild we aren't done yet
+            if (self._flags._field_start) {
+                return false;
+            }
+
+            // We're at the end if our current character is null
+            return self.current() == null;
         }
 
+        /// Consume a character and move forward our reader
         fn consume(self: *@This()) ReadError!void {
             self._cur = self._next;
+
+            // This checks to see if we already hit the end of the stream
+            // If so, don't try calling our reader again since we know it's
+            // already empty
             if (self._next == null and self._flags._started) {
                 return;
             }
+            self._flags._started = true;
+
+            // Try to get the next byte from our reader
             self._next = self._reader.readByte() catch |err| blk: {
+                // Handle the end of an input stream
                 if (err == ReadError.EndOfStream) {
                     break :blk null;
                 }
@@ -74,30 +90,36 @@ pub fn FieldStreamPartial(
             };
         }
 
+        /// Peak at the next character
         fn peek(self: @This()) ?u8 {
             return self._next;
         }
+
+        /// Get the current character
         fn current(self: @This()) ?u8 {
             return self._cur;
         }
 
         /// Parse the next field
         pub fn next(self: *@This(), writer: Writer) Error!void {
+            // lazy-initialize our parser
             if (!self._flags._started) {
+                // Consume twice to populate our cur and next registers
                 try self.consume();
-                self._flags._started = true;
                 try self.consume();
             }
 
             if (self.current() == null) {
+                // If we end on a comma, we will output a "null" field
+                // However, we need to make sure we don't output an infinte
+                // number of null fields. To do that, we always set our
+                // field_start flag to false, that way we output at most
+                // one null field
                 self._flags._field_start = false;
                 return;
             }
 
-            if (self._flags._inc_row) {
-                self._row += 1;
-                self._flags._inc_row = false;
-            }
+            self._flags._row_end = false;
 
             // We won't technically hit an infinite loop,
             // but we practically will since this is a lot
@@ -105,7 +127,9 @@ pub fn FieldStreamPartial(
             var index: usize = 0;
             for (0..(MAX_FIELD_LEN + 1)) |i| {
                 index = i;
+
                 if (self._flags._in_quote) {
+                    // Handle quoted strings
                     if (self.current()) |cur| {
                         switch (cur) {
                             '"' => {
@@ -129,50 +153,49 @@ pub fn FieldStreamPartial(
                     } else {
                         return CsvReadError.UnexpectedEndOfFile;
                     }
-                } else {
-                    if (self.current()) |cur| {
-                        switch (cur) {
-                            '"' => {
-                                if (!self._flags._field_start) {
-                                    return CsvReadError.UnexpectedQuote;
-                                }
-                                self._flags._in_quote = true;
-                                self._flags._field_start = false;
-                                try self.consume();
-                            },
-                            ',',
-                            => {
-                                self._flags._field_start = true;
-                                self._flags._inc_row = false;
-                                try self.consume();
-                                return;
-                            },
-                            '\n',
-                            => {
-                                self._flags._field_start = self.peek() != null;
-                                self._flags._inc_row = true;
-                                try self.consume();
-                                return;
-                            },
-                            '\r' => {
-                                if (self.peek() != '\n') {
-                                    return CsvReadError.InvalidLineEnding;
-                                }
-                                try self.consume();
-                                try self.consume();
-                                self._flags._field_start = self.peek() != null;
-                                self._flags._inc_row = true;
-                                return;
-                            },
-                            else => |c| {
-                                self._flags._field_start = false;
-                                try writer.writeByte(c);
-                                try self.consume();
-                            },
-                        }
-                    } else {
-                        return;
+                } else if (self.current()) |cur| {
+                    // Handle unquoted strings
+                    switch (cur) {
+                        '"' => {
+                            if (!self._flags._field_start) {
+                                return CsvReadError.UnexpectedQuote;
+                            }
+                            self._flags._in_quote = true;
+                            self._flags._field_start = false;
+                            try self.consume();
+                        },
+                        ',',
+                        => {
+                            self._flags._field_start = true;
+                            self._flags._row_end = false;
+                            try self.consume();
+                            return;
+                        },
+                        '\n',
+                        => {
+                            self._flags._field_start = self.peek() != null;
+                            self._flags._row_end = true;
+                            try self.consume();
+                            return;
+                        },
+                        '\r' => {
+                            if (self.peek() != '\n') {
+                                return CsvReadError.InvalidLineEnding;
+                            }
+                            try self.consume();
+                            try self.consume();
+                            self._flags._field_start = self.peek() != null;
+                            self._flags._row_end = true;
+                            return;
+                        },
+                        else => |c| {
+                            self._flags._field_start = false;
+                            try writer.writeByte(c);
+                            try self.consume();
+                        },
                     }
+                } else {
+                    return;
                 }
             }
 
@@ -223,18 +246,17 @@ test "csv field streamer partial" {
     };
 
     var ei: usize = 0;
-    var row: usize = 0;
 
     while (!stream.atEnd()) {
         try stream.next(buff.writer());
         defer {
             buff.clearRetainingCapacity();
-            row += if (expected[ei].len == 0) 1 else 0;
             ei += 1;
         }
+        const atEnd = ei % 5 == 4;
         const field = buff.items;
         try std.testing.expectEqualStrings(expected[ei], field);
-        try std.testing.expectEqual(row, stream._row);
+        try std.testing.expectEqual(atEnd, stream.atRowEnd());
     }
 
     try std.testing.expectEqual(expected.len, ei);
@@ -263,11 +285,6 @@ pub fn FieldStream(
             return .{
                 ._partial = Fs.init(reader, .{ .max_len = 1_024 }),
             };
-        }
-
-        /// Returns the current row number
-        pub fn row(self: @This()) usize {
-            return self._partial._row;
         }
 
         /// Returns whether the field just parsed was at the end of a row
@@ -329,10 +346,10 @@ test "csv field streamer" {
             buff.clearRetainingCapacity();
             ei += 1;
         }
-        const row = @divFloor(ei, 5);
+        const atEnd = ei % 5 == 4;
         const field = buff.items;
         try std.testing.expectEqualStrings(expected[ei], field);
-        try std.testing.expectEqual(row, stream.row());
+        try std.testing.expectEqual(atEnd, stream.atRowEnd());
     }
 
     try std.testing.expectEqual(expected.len, ei);

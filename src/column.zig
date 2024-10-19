@@ -53,7 +53,8 @@ pub const Field = struct {
     }
 
     /// Returns a slice string of the data
-    /// If the data is empty or equal to "-", will return null instead of an empty string
+    /// If the data is empty or equal to "-", will return null instead of an
+    /// empty string
     /// If you don't want null, use ".data()"
     pub fn asSlice(self: *const Field) ?[]const u8 {
         if (self.isNull()) {
@@ -356,7 +357,12 @@ test "csv parse into value" {
     );
 
     const expected = [_]User{
-        User{ .id = 1, .name = "John \"Johnny\" Doe", .age = 32, .active = true },
+        User{
+            .id = 1,
+            .name = "John \"Johnny\" Doe",
+            .age = 32,
+            .active = true,
+        },
         User{ .id = 2, .name = "Smith, Jack", .age = 53, .active = false },
         User{ .id = 3, .name = "Peter", .age = 18, .active = true },
         User{ .id = 4, .name = null, .age = null, .active = false },
@@ -413,7 +419,12 @@ test "csv detach memory" {
     );
 
     const expected = [_]User{
-        User{ .id = 1, .name = "John \"Johnny\" Doe", .age = 32, .active = true },
+        User{
+            .id = 1,
+            .name = "John \"Johnny\" Doe",
+            .age = 32,
+            .active = true,
+        },
         User{ .id = 2, .name = "Smith, Jack", .age = 53, .active = false },
         User{ .id = 3, .name = "Peter", .age = 18, .active = true },
         User{ .id = 4, .name = "", .age = null, .active = false },
