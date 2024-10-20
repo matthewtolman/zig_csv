@@ -99,6 +99,8 @@ pub fn Parser(comptime Reader: type, comptime opts: column.ParserOpts) type {
             // Clean up our memory
             errdefer res.deinit();
 
+            try res._map.ensureTotalCapacity(@truncate(self._header.fields().len));
+
             for (fields, 0..) |_, i| {
                 if (i >= self._header.fields().len) {
                     return Error.NoHeaderForColumn;

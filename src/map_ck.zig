@@ -106,6 +106,7 @@ pub fn Parser(comptime Reader: type, comptime opts: column.ParserOpts) type {
             // Clean up our memory
             errdefer res.deinit();
 
+            try res._map.ensureTotalCapacity(@truncate(self._header.fields().len));
             // Reserve capacity for our headers copy
             try res._header_mem.ensureTotalCapacity(self._header.fields().len);
 

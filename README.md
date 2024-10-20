@@ -245,7 +245,7 @@ if (column.err) |err| {
 
 ### Raw Parser
 
-The raw parser is a zero-allocation column. Unlike the allocating parser pattern, this parser does not unescape quoted strings or converts values into other types. Instead, it identifies the boundaries of each field start and end and returns slices to those boundaries. This means if you have the CSV row `"Jack ""Jim"" Smith",12` you will end up with the fields `"Jack ""Jim"" Smith"` and `12`. (Note that the surrounding quotes are part of the resulting output).
+The raw parser is a zero-allocation parser. Unlike the allocating parser pattern, this parser does not unescape quoted strings or converts values into other types. Instead, it identifies the boundaries of each field start and end and returns slices to those boundaries. This means if you have the CSV row `"Jack ""Jim"" Smith",12` you will end up with the fields `"Jack ""Jim"" Smith"` and `12`. (Note that the surrounding quotes are part of the resulting output).
 
 Addtionally, the raw parser does not work with readers. Instead, it requires the entire CSV file to be loaded into memory. This is because it returns slices into the CSV memory rather than return newly allocated memory.
 
