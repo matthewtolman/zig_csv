@@ -1,3 +1,4 @@
+pub const raw = @import("raw.zig");
 pub const slice = @import("slice.zig");
 pub const stream = @import("stream.zig");
 pub const column = @import("column.zig");
