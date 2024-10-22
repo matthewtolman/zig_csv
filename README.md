@@ -102,7 +102,7 @@ for (rowData) |elem| {
 
 ## Reading a CSV
 
-There are several patterns for reading CSV files provided. There are several zero allocation methodologies (raw, field streaming) and a few allocating strategies (map, column parser). In general, most develoeprs will want to use the allocating parser strategy.
+There are several patterns for reading CSV files provided. There are several zero allocation methodologies (array, field streaming) and a few allocating strategies (map, column parser). In general, non-allocating parsers will be faster but at the cost of flexibility. For instance, the array parser must have the entire CSV file stored in memory, whereas the column and map parsers may operator on a reader directly. Additionally, the array parser does not automatically unescape CSV values whereeas the column and map parsers do.
 
 > Note: None of the parsers trim whitespace from any fields at any point.
 
@@ -133,7 +133,7 @@ const allocator = gpa.allocator();
 // Get a reader
 const stdin = std.io.getStdIn().reader();
 
-// Make a parser
+// Make a parse
 // If we want to copy headers, simply change map_sk to map_ck
 // We need a try since we will try to parse the headers immediately, which may fail
 var parser = try zcsv.map_sk.init(allocator, stdin, .{});
@@ -243,13 +243,15 @@ if (column.err) |err| {
 
 ```
 
-### Raw Parser
+### Array Parser
 
-The raw parser is a zero-allocation parser. Unlike the allocating parser pattern, this parser does not unescape quoted strings or converts values into other types. Instead, it identifies the boundaries of each field start and end and returns slices to those boundaries. This means if you have the CSV row `"Jack ""Jim"" Smith",12` you will end up with the fields `"Jack ""Jim"" Smith"` and `12`. (Note that the surrounding quotes are part of the resulting output).
+The array parser is a zero-allocation parser. Unlike the allocating parser pattern, this parser does not unescape quoted strings automatically. Additionally, this parser must have the CSV data loaded into an array or slice of memory.
 
-Addtionally, the raw parser does not work with readers. Instead, it requires the entire CSV file to be loaded into memory. This is because it returns slices into the CSV memory rather than return newly allocated memory.
+This parser operates by identifying the boundaries of each field start and end and returns slices to those boundaries. This means if you have the CSV row `"Jack ""Jim"" Smith",12` you will end up with the fields `"Jack ""Jim"" Smith"` and `12`. (Note that the surrounding quotes are part of the resulting output).
 
-Below is an example of how to use the raw column.
+It does provide methods for optional decoding (e.g. asInt, decode, etc).
+
+Below is an example of how to use the array column.
 
 ```zig
 const zcsv = @import("zcsv");
@@ -263,7 +265,7 @@ const csv =
 ;
 
 // No allocator needed
-var parser = zcsv.raw.init(csv);
+var parser = zcsv.slice.init(csv);
 
 // Will print:
 // Row: Field: userid Field: name Field: age 
@@ -282,6 +284,12 @@ while (parser.next()) |row| {
     // Iterate over the fields
     while (iter.next()) |f| {
         std.io.debug("Field: {s} ", f);
+
+        // Unescape the string
+        var buff: u8[512] = undefined;
+        var fbuff = std.io.fixedBufferStream(&buff);
+        f.decode(fbuff.writer());
+        std.io.debug("Decoded: {s} ", f.getWritten());
     }
 }
 

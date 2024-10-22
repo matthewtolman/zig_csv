@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) void {
         libc: bool = false,
     }{
         .{ .file = "examples/01_basic.zig", .name = "example_1" },
-        .{ .file = "examples/02_basic_raw.zig", .name = "example_2" },
+        .{ .file = "examples/02_basic_array.zig", .name = "example_2" },
         .{ .file = "examples/03_basic_field_stream.zig", .name = "example_3" },
         .{ .file = "examples/04_read_file.zig", .name = "example_4" },
         .{ .file = "examples/05_detach_memory.zig", .name = "example_5" },
