@@ -51,6 +51,36 @@ while (parser.next()) |row| {
 
     std.debug.print("ID: {}\n", id);
 }
+
+// Zero-allocation parsing of an in-memory data structure
+const csv =
+    \\productid,productname,productsales
+    \\1238943,"""Juice"" Box",9238
+    \\3892392,"I can't believe it's not chicken!",480
+    \\5934810,"Win The Fish",-
+;
+
+var parser = zcsv.slice.rows.init(csv, .{});
+
+while (parser.next()) |row| {
+    // iterate over fields
+    var iter = row.iter();
+
+    while (iter.next()) |field| {
+        // we need to manually decode fields
+        // we can opt out of decoding work for ignored fields
+        var decode_bytes: [256]u8 = undefined;
+        var decode_buff = std.io.fixedBufferStream(&decode_bytes);
+        try field.decode(decode_buff.writer());
+
+        const decoded = decode_buff.getWritten();
+        // use decoded here
+    }
+}
+// check for errors
+if (parser.err) |err| {
+    return err;
+}
 ```
 
 ## Installation
@@ -416,9 +446,6 @@ std.log.info("Enter CSV to parse", .{});
 try stderr.print("> ", .{});
 // The writer is passed to each call to next
 // This allows us to use a different writer per field
-//
-// next does throw if it has an error.
-// next will return `false` when it hits the end of the input
 while (parser.next()) |row| {
     // iterate over fields
     var iter = row.iter();
@@ -454,9 +481,6 @@ std.log.info("Enter CSV to parse", .{});
 try stderr.print("> ", .{});
 // The writer is passed to each call to next
 // This allows us to use a different writer per field
-//
-// next does throw if it has an error.
-// next will return `false` when it hits the end of the input
 while (!parser.done()) {
     // We have to manually decode the field
     try parser.next(tmp_buff.writer());
@@ -504,9 +528,6 @@ std.log.info("Enter CSV to parse", .{});
 try stderr.print("> ", .{});
 // The writer is passed to each call to next
 // This allows us to use a different writer per field
-//
-// next does throw if it has an error.
-// next will return `false` when it hits the end of the input
 while (parser.next()) |f| {
     // Do whatever you need to here for the field
     try f.decode(stderr);
