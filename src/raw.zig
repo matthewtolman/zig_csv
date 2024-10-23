@@ -1,8 +1,11 @@
 const CsvReadError = @import("common.zig").CsvReadError;
+const ParserLimitOpts = @import("common.zig").ParserLimitOpts;
 
+/// Iterates over the fields of a CSV row
 pub const RowIterator = struct {
     _row: *const Row,
     _pos: usize = 0,
+    _opts: ParserLimitOpts,
 
     /// Gets the next field from the CSV iterator
     pub fn next(self: *RowIterator) ?[]const u8 {
@@ -13,9 +16,12 @@ pub const RowIterator = struct {
         var in_quote = false;
         var cur_index = self._pos;
 
-        while (cur_index < self._row._data.len) {
+        const MAX_ITER = self._opts.max_iter;
+        var index: usize = 0;
+        while (index < MAX_ITER and cur_index < self._row._data.len) {
             const cur = self._row._data[cur_index];
             defer {
+                index += 1;
                 cur_index += 1;
             }
 
@@ -34,6 +40,10 @@ pub const RowIterator = struct {
             }
         }
 
+        if (index >= MAX_ITER) {
+            unreachable;
+        }
+
         if (in_quote) {
             unreachable;
         }
@@ -48,9 +58,10 @@ pub const RowIterator = struct {
 /// Simply returns them as-is
 pub const Row = struct {
     _data: []const u8,
+    _opts: ParserLimitOpts,
 
     pub fn iter(self: *const Row) RowIterator {
-        return .{ ._row = self };
+        return .{ ._row = self, ._opts = self._opts };
     }
 };
 
@@ -85,7 +96,7 @@ test "raw csvfield iterator" {
     };
 
     for (tests) |t| {
-        const row = Row{ ._data = t.input };
+        const row = Row{ ._data = t.input, ._opts = .{} };
         var iterator = row.iter();
         var fi: usize = 0;
         while (iterator.next()) |it| {
@@ -102,13 +113,15 @@ test "raw csvfield iterator" {
 pub const Parser = struct {
     _text: []const u8,
     _pos: usize = 0,
+    _opts: ParserLimitOpts,
     err: ?CsvReadError = null,
 
     /// Initializes a row iterator
-    pub fn init(text: []const u8) Parser {
+    pub fn init(text: []const u8, opts: ParserLimitOpts) Parser {
         return Parser{
             ._text = text,
             ._pos = 0,
+            ._opts = opts,
             .err = null,
         };
     }
@@ -124,9 +137,11 @@ pub const Parser = struct {
         var last: u8 = ',';
         var cur_index = self._pos;
 
-        while (cur_index < self._text.len) {
+        var index: usize = 0;
+        while (cur_index < self._text.len and index < self._opts.max_iter) {
             const cur = self._text[cur_index];
             defer {
+                index += 1;
                 cur_index += 1;
                 last = cur;
             }
@@ -160,6 +175,7 @@ pub const Parser = struct {
                         defer self._pos = cur_index + 2;
                         return Row{
                             ._data = self._text[self._pos .. cur_index + 1],
+                            ._opts = self._opts,
                         };
                     } else {
                         self.err = CsvReadError.InvalidLineEnding;
@@ -174,8 +190,14 @@ pub const Parser = struct {
                 defer self._pos = cur_index + 1;
                 return Row{
                     ._data = self._text[self._pos .. cur_index + 1],
+                    ._opts = self._opts,
                 };
             }
+        }
+
+        if (index >= self._opts.max_iter) {
+            self.err = CsvReadError.InternalLimitReached;
+            return null;
         }
 
         if (in_quote) {
@@ -187,13 +209,14 @@ pub const Parser = struct {
 
         return Row{
             ._data = self._text[self._pos..],
+            ._opts = self._opts,
         };
     }
 };
 
 /// Initializes a new raw parser
-pub fn init(text: []const u8) Parser {
-    return Parser.init(text);
+pub fn init(text: []const u8, opts: ParserLimitOpts) Parser {
+    return Parser.init(text, opts);
 }
 
 test "row iterator" {
@@ -264,7 +287,7 @@ test "row iterator" {
     };
 
     for (tests) |testCase| {
-        var iterator = Parser.init(testCase.input);
+        var iterator = Parser.init(testCase.input, .{});
         var cnt: usize = 0;
         while (iterator.next()) |_| {
             cnt += 1;
@@ -286,7 +309,7 @@ test "row and field iterator" {
 
     const fieldCount = 9;
 
-    var parser = Parser.init(input);
+    var parser = Parser.init(input, .{});
     var cnt: usize = 0;
     while (parser.next()) |row| {
         var iter = row.iter();

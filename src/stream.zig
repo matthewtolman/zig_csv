@@ -13,7 +13,7 @@ const FSFlags = packed struct {
 
 /// Options for Partial Field Stream
 pub const PartialOpts = struct {
-    max_len: usize = 4_294_967_296,
+    max_len: usize = 65_536,
 };
 
 /// A CSV field stream will write fields to an output writer one field at a time
@@ -49,11 +49,11 @@ pub fn FieldStreamPartial(
 
         /// Returns whether the field just parsed was at the end of a row
         pub fn atRowEnd(self: @This()) bool {
-            return self.atEnd() or self._flags._row_end;
+            return self.done() or self._flags._row_end;
         }
 
         /// Returns we're at the end of the input
-        pub fn atEnd(self: @This()) bool {
+        pub fn done(self: @This()) bool {
             // If we haven't started then we can't be at the end yet
             if (!self._flags._started) {
                 return false;
@@ -247,7 +247,7 @@ test "csv field streamer partial" {
 
     var ei: usize = 0;
 
-    while (!stream.atEnd()) {
+    while (!stream.done()) {
         try stream.next(buff.writer());
         defer {
             buff.clearRetainingCapacity();
@@ -298,8 +298,8 @@ pub fn FieldStream(
         }
 
         /// Returns we're at the end of the input
-        pub fn atEnd(self: @This()) bool {
-            return self._partial.atEnd();
+        pub fn done(self: @This()) bool {
+            return self._partial.done();
         }
 
         /// Parse the next field
@@ -346,7 +346,7 @@ test "csv field streamer" {
 
     var ei: usize = 0;
 
-    while (!stream.atEnd()) {
+    while (!stream.done()) {
         try stream.next(buff.writer());
         defer {
             buff.clearRetainingCapacity();

@@ -1,5 +1,9 @@
 const std = @import("std");
 const CsvReadError = @import("common.zig").CsvReadError;
+// the volume of memory allocations we do overshadows any performance gains from
+// stream_fast by a vast margin
+// Using stream since it is better tested, simpler, and easier to verify that it
+// is indeed correct
 const stream = @import("stream.zig");
 
 /// Represents a CSV field copied to the heap
@@ -209,7 +213,7 @@ pub const Row = struct {
 /// Options for using FieldStream as underlying parser
 pub const FullStreamOpts = struct {
     /// size of the internal buffer
-    max_len: usize = 1_024,
+    buff_size: usize = 1_024,
 };
 
 /// Options for using FieldStreamPartial as underlying parser
@@ -238,7 +242,7 @@ pub const ParserOpts = struct {
 pub fn Parser(comptime Reader: type, comptime opts: ParserOpts) type {
     const Writer = std.ArrayList(u8).Writer;
     const Fs = comptime switch (opts.buffer) {
-        .stack => |o| stream.FieldStream(Reader, Writer, o.max_len),
+        .stack => |o| stream.FieldStream(Reader, Writer, o.buff_size),
         .heap => |_| stream.FieldStreamPartial(Reader, Writer),
     };
     return struct {
@@ -291,7 +295,7 @@ pub fn Parser(comptime Reader: type, comptime opts: ParserOpts) type {
                 return err;
             }
 
-            if (self._buffer.atEnd()) {
+            if (self._buffer.done()) {
                 return null;
             }
 
@@ -455,7 +459,7 @@ test "csv parser stack" {
     var input = std.io.fixedBufferStream(buffer);
     var parser = Parser(
         @TypeOf(input.reader()),
-        .{ .buffer = .{ .stack = .{ .max_len = 256 } } },
+        .{ .buffer = .{ .stack = .{ .buff_size = 256 } } },
     ).init(std.testing.allocator, input.reader());
 
     const expected = [_][4][]const u8{

@@ -1,6 +1,6 @@
 # ZCSV (Zig CSV)
 
-> Supported Zig versions: 0.13.0, 0.14.0-dev
+> Supported Zig versions: 0.13.0, 0.14.0-dev.1951+857383689
 
 ZCSV is a CSV parser and writer library. The goal is to provide both writers and parsers which are allocation free while also having a parser which does use memory allocations for a more developer-friendly interface.
 
@@ -102,9 +102,11 @@ for (rowData) |elem| {
 
 ## Reading a CSV
 
-There are several patterns for reading CSV files provided. There are several zero allocation methodologies (array, field streaming) and a few allocating strategies (map, column parser). In general, non-allocating parsers will be faster but at the cost of flexibility. For instance, the array parser must have the entire CSV file stored in memory, whereas the column and map parsers may operator on a reader directly. Additionally, the array parser does not automatically unescape CSV values whereeas the column and map parsers do.
+There are several patterns for reading CSV files provided, including allocating and non-allocating parsers. In general, non-allocating parsers will be faster (especially the `slice` and `stream_fast` parsers), but the speed comes at the cost of flexibility and ease-of-use. For instance, the array parser must have the entire CSV file stored in memory, whereas the column and map parsers may operator on a reader directly. Additionally, the non-allocating parsers do not automatically unescape CSV values whereeas allocating parsers do.
 
 > Note: None of the parsers trim whitespace from any fields at any point.
+
+We'll discuss parsers from the most feature rich but slowest to the most restrictive but fastest.
 
 ### Map Parser
 The map parsers will perform memory allocations as they are creating dynamically allocated hash maps with all of the fields. The map parsers also assume that the first row is a header row. If that assumption is not the case, then it is recommended to use the column parser.
@@ -243,9 +245,101 @@ if (column.err) |err| {
 
 ```
 
-### Array Parser
+### Slower Streaming Parser (zero-allocation)
 
-The array parser is a zero-allocation parser. Unlike the allocating parser pattern, this parser does not unescape quoted strings automatically. Additionally, this parser must have the CSV data loaded into an array or slice of memory.
+The field streamer will write each filed into a writer. It does not try to indicate the end of a row to the writer. Instead, it exposes state in the form of the `atRowEnd` method.
+
+There are two sub-approaches depending on validation. The first is partial fields (through `FieldStreamPartial`) and the next is fully-valid fields only (through `FieldStream`).
+
+> Note: the Parser uses the `FieldStream` behind the scenes
+
+With the partial fields each byte is written as it is processed without buffering. This means that if there is an invalid field (e.g. `John"Doe"`), then some of the data will be written to the writer before the parse error is detected. However, this also means there is no internal buffer limiting field size or taking up stack memory. A "no infinite loop" limit is imposed of 2^32 bytes per field. This may be adjusted if desired (for whatever reason).
+
+In contrast, the fully-valid field only model will buffer fields internally and ensure they are valid before writing them to the stream. When it does write to the writer, it will write the entire field at once. This also has the advantage that writers which require memory allocations will perform fewer allocations on average.
+
+However, because `FixedStream` needs an in-memory buffer we do need to keep that buffer in the stack. The size of the buffer must be provided at compile time.
+
+Both field streamers also provide a row count with the `row` property.
+
+Field streamers are primarily meant to be used inside a more complex parser. As such, their usage and interface is less user-friendly, and they can offer more detail than is necessary. When possible, use one of the other provided parsers.
+
+Below is example usage of the partial field stream:
+
+```zig
+const zcsv = @import("zcsv");
+const std = @import("std");
+
+/// ...
+
+// Get reader and writer
+const stdin = std.io.getStdIn().reader();
+const stdout = std.io.getStdOut().writer();
+
+// no allocator needed
+var parser = zcsv.stream.FieldStreamPartial(
+    @TypeOf(stdin),
+    @TypeOf(stdout),
+).init(stdin, .{});
+
+std.debug.print("\nRow: ", .{});
+// The writer is passed to each call to next
+// This allows us to use a different writer per field
+//
+// next does throw if it has an error.
+// next will return `false` when it hits the end of the input
+while (!parser.done()) {
+    try parser.next(stdout);
+    // Do whatever you need to here for the field
+
+    // This is how you can tell if you're about to move to the next row
+    // Note that we aren't at the next row, just that we're about to move
+    if (column.atRowEnd()) {
+        std.debug.print("\nRow: ", .{});
+    }
+}
+```
+
+Below is example usage of the full field stream. You'll notice that there is barely any difference. This is intetional since we want to be able to switch between them quickly.
+
+```zig
+const zcsv = @import("zcsv");
+const std = @import("std");
+
+/// ...
+
+// Get reader and writer
+const stdin = std.io.getStdIn().reader();
+const stdout = std.io.getStdOut().writer();
+
+var parser = zcsv.stream.FieldStream(
+    @TypeOf(stdin),
+    @TypeOf(stdout),
+    1_024, // Internal buffer size
+).init(stdin); // No second parameter here
+
+std.debug.print("\nRow: ", .{});
+// The writer is passed to each call to next
+// This allows us to use a different writer per field
+//
+// next does throw if it has an error.
+// next will return `false` when it hits the end of the input
+while (!parser.done()) {
+    try parser.next(stdout);
+    // Do whatever you need to here for the field
+
+    // This is how you can tell if you're about to move to the next row
+    // Note that we aren't at the next row, just that we're about to move
+    if (column.atRowEnd()) {
+        std.debug.print("\nRow: ", .{});
+    }
+}
+```
+
+This parser operates at a reasonable speed, able to parse around 12MB in 150ms on my 2019 MacBook Pro. This parser forms the basis of all the allocating parsers. I don't use any of the faster parsers since the volume of memory allocations done by the column and map parsers outweighs the performance benefits in my testing, and the other parsers are ether more inflexible (e.g. raw parser) or way harder to verify correctness (e.g. fast streaming).
+
+### Raw Parser (zero-allocation)
+
+The raw parser is a zero-allocation parser. Unlike the allocating parsers, this parser does not unescape quoted strings automatically. Additionally, this parser must have the CSV data loaded into an array or slice of memory.
 
 This parser operates by identifying the boundaries of each field start and end and returns slices to those boundaries. This means if you have the CSV row `"Jack ""Jim"" Smith",12` you will end up with the fields `"Jack ""Jim"" Smith"` and `12`. (Note that the surrounding quotes are part of the resulting output).
 
@@ -299,101 +393,154 @@ if (column.err) |err| {
 }
 ```
 
-### Field Streamer
+This parser is faster than the slow streaming parser. It can parse 12MB in about 45ms on my MacBook.
 
-The field streamer will write each filed into a writer. It does not try to indicate the end of a row to the writer. Instead, it exposes state in the form of the `atRowEnd` method. 
+### Slice Row Parser (zero-allocation, fast)
 
-There are two sub-approaches depending on validation. The first is partial fields (through `FieldStreamPartial`) and the next is fully-valid fields only (through `FieldStream`).
+The slice row parser is similar to the raw parser in terms of capabilities and limitations. It iterates over rows, and it requires the CSV to be in-memory. The biggest difference is that it uses SIMD techniques (though it doesn't use explicit SIMD vectorization commands). This allows it to be faster. It can parse 12MB in about 34ms on my MacBook. This is not the fastest parser, but it is one of the fastest.
 
-> Note: the Parser uses the `FieldStream` behind the scenes
-
-With the partial fields each byte is written as it is processed without buffering. This means that if there is an invalid field (e.g. `John"Doe"`), then some of the data will be written to the writer before the parse error is detected. However, this also means there is no internal buffer limiting field size or taking up stack memory. A "no infinite loop" limit is imposed of 2^32 bytes per field. This may be adjusted if desired (for whatever reason).
-
-In contrast, the fully-valid field only model will buffer fields internally and ensure they are valid before writing them to the stream. When it does write to the writer, it will write the entire field at once. This also has the advantage that writers which require memory allocations will perform fewer allocations on average.
-
-However, because `FixedStream` needs an in-memory buffer we do need to keep that buffer in the stack. The size of the buffer must be provided at compile time.
-
-Both field streamers also provide a row count with the `row` property.
-
-Field streamers are primarily meant to be used inside a more complex parser. As such, their usage and interface is less user-friendly, and they can offer more detail than is necessary. When possible, use one of the other provided parsers.
-
-Below is example usage of the partial field stream:
+Example usage:
 
 ```zig
-const zcsv = @import("zcsv");
-const std = @import("std");
+const csv =
+    \\productid,productname,productsales
+    \\1238943,"""Juice"" Box",9238
+    \\3892392,"I can't believe it's not chicken!",480
+    \\5934810,"Win The Fish",-
+;
+const stderr = std.io.getStdErr().writer();
 
-/// ...
+var parser = zcsv.slice.rows.init(csv, .{});
+std.log.info("Enter CSV to parse", .{});
 
-// Get reader and writer
-const stdin = std.io.getStdIn().reader();
-const stdout = std.io.getStdOut().writer();
-
-// no allocator needed
-var parser = zcsv.stream.FieldStreamPartial(
-    @TypeOf(stdin),
-    @TypeOf(stdout),
-).init(stdin, .{});
-
-std.debug.print("\nRow: ", .{});
+try stderr.print("> ", .{});
 // The writer is passed to each call to next
 // This allows us to use a different writer per field
 //
 // next does throw if it has an error.
 // next will return `false` when it hits the end of the input
-while (!parser.atEnd()) {
-    try parser.next(stdout);
-    // Do whatever you need to here for the field
+while (parser.next()) |row| {
+    // iterate over fields
+    var iter = row.iter();
 
-    // This is how you can tell if you're about to move to the next row
-    // Note that we aren't at the next row, just that we're about to move
-    if (column.atRowEnd()) {
-        std.debug.print("\nRow: ", .{});
+    while (iter.next()) |field| {
+        // we need to manually decode fields
+        try field.decode(stderr);
     }
+    try stderr.print("\n> ", .{});
+}
+// check for errors
+if (parser.err) |err| {
+    return err;
 }
 ```
 
-Below is example usage of the full field stream. You'll notice that there is barely any difference. This is intetional since we want to be able to switch between them quickly.
+### Fast Streaming Parser (zero-allocation, fast)
+
+The fast streaming parser uses SIMD techniques (though it does not use explicit SIMD vectorization). It can acheive speeds faster than the parsers discussed above (though it's not the fastest in the library).
+
+However, I have found that excessive memory allocations (such as with the allocating parsers) can wipe out those speed gains with the general purpose allocator, even when using the release fast compilation mode. Additionally, this parser has been the trickiest for me to write, and I'm not 100% confident in its correctness yet. As such, I've opted to use the slower streaming parser as the basis for my allocating parsers since it's easier to verify correctness, and it performs about the same.
+
+If you wish to use the fast streaming parser directly, you can. Below is an example on how to use it:
 
 ```zig
-const zcsv = @import("zcsv");
-const std = @import("std");
+const reader = std.io.getStdIn().reader();
 
-/// ...
+var tmp_bytes: [1024]u8 = undefined;
+var tmp_buff = std.io.fixedBufferStream(&tmp_bytes);
+var parser = zcsv.stream_fast.init(reader, @TypeOf(tmp_buff).Writer, .{});
+std.log.info("Enter CSV to parse", .{});
 
-// Get reader and writer
-const stdin = std.io.getStdIn().reader();
-const stdout = std.io.getStdOut().writer();
-
-var parser = zcsv.stream.FieldStream(
-    @TypeOf(stdin),
-    @TypeOf(stdout),
-    1_024, // Internal buffer size
-).init(stdin); // No second parameter here
-
-std.debug.print("\nRow: ", .{});
+try stderr.print("> ", .{});
 // The writer is passed to each call to next
 // This allows us to use a different writer per field
 //
 // next does throw if it has an error.
 // next will return `false` when it hits the end of the input
-while (!parser.atEnd()) {
-    try parser.next(stdout);
+while (!parser.done()) {
+    // We have to manually decode the field
+    try parser.next(tmp_buff.writer());
+    try zcsv.core.decode(tmp_buff.getWritten(), stderr);
     // Do whatever you need to here for the field
 
     // This is how you can tell if you're about to move to the next row
     // Note that we aren't at the next row, just that we're about to move
-    if (column.atRowEnd()) {
-        std.debug.print("\nRow: ", .{});
+    if (parser.atRowEnd()) {
+        if (!parser.done()) {
+            try stderr.print("\n> ", .{});
+        } else {
+            try stderr.print("\nClosing...\n", .{});
+        }
+    } else {
+        try stderr.print("\t", .{});
     }
+}
+
+```
+
+The speed of this parser is pretty good, with 12MB parsing in about 22ms.
+
+### Slice Field Parser (zero-allocation, fast)
+
+Like the slice row parser, this parser also uses SIMD and requires the CSV to be in memory. However, this parser only iterates over fields rather than rows. It relies on a value indicating whether a field is at the end of a row to indicate that we've reached the end. This optimization means that it only has to examine a set of bytes once, whereas the slice row parser examines rows twice (once to iterate over rows, once to iterate over fields). This performance improvement makes it the fastst parser in this library. I was able to parse 12MB in about 17ms on my MacBook.
+
+As for the SIMD-based parsers, this is the best tested and most correct of the parsers. If you want a fast parser, this is probably it. The next best one would be the slice row parser since that uses this parser under the hood.
+
+Usage example:
+
+```zig
+// Get reader and writer
+const csv =
+    \\productid,productname,productsales
+    \\1238943,"""Juice"" Box",9238
+    \\3892392,"I can't believe it's not chicken!",480
+    \\5934810,"Win The Fish",-
+;
+const stderr = std.io.getStdErr().writer();
+
+var parser = zcsv.slice.fields.init(csv, .{});
+std.log.info("Enter CSV to parse", .{});
+
+try stderr.print("> ", .{});
+// The writer is passed to each call to next
+// This allows us to use a different writer per field
+//
+// next does throw if it has an error.
+// next will return `false` when it hits the end of the input
+while (parser.next()) |f| {
+    // Do whatever you need to here for the field
+    try f.decode(stderr);
+
+    // This is how you can tell if you're about to move to the next row
+    // Note that we aren't at the next row, just that we're about to move
+    if (f.row_end) {
+        if (!parser.done()) {
+            try stderr.print("\n> ", .{});
+        } else {
+            try stderr.print("\nClosing...\n", .{});
+        }
+    } else {
+        try stderr.print("\t", .{});
+    }
+}
+
+// check for errors
+if (parser.err) |err| {
+    return err;
 }
 ```
 
-## Allocating Parser Details
+## Parser Limit Options
 
-The allocating parsers have additional details concerning configuration options and memory lifetimes. These details affect the column and map parsers (both `map_sk` and `map_ck`).
+All of the parsers have some sort of "infinite loop protection" built in. Generally, this is a limit to 65,536 maximum loop iteration (unless there's an internal stack buffer, then the internal stack buffer will dictate the limit). This limit can be changed by adjusting the options passed into the parser. This is also why all parsers take options (either comptime or runtime options).
+
+## Parser Details
+
+The parsers have additional details concerning configuration options and memory lifetimes. These details affect the column and map parsers (both `map_sk` and `map_ck`).
 
 ### Parser Options
+
+Non-allocating parsers genearlly just take the parser iteration limit options, which are discussed above.
 
 For allocating parsers, there is a compile-time options struct that will determine the underlying characteristics of the parser. This includes choosing between either the `FieldStream` or `FieldStreamPartial` for the internal parsing, as well as determining either the internal buffer limit or infinite-loop safeguard sizes.
 
@@ -401,7 +548,7 @@ By default, the parsers will use `FieldStreamPartial`. When doing so, the parser
 
 This method allows for arbitrary field sizes without knowing anything about the incoming data set. This provides for an easy "getting started" experience, but it does so at the cost of performance, especially in regards to the number of memory allocations.
 
-> Note: By default there is a 4GB limit per field as part of an infinite-loop safeguard. If you need to change this, you can "disable" it with the option struct `.{ .partial = .{ max_len = std.math.maxInt(usize) } }`. Do note that you will need to have a lot of memory on your computer if you disable this.
+> Note: By default there is a 65K limit per field as part of an infinite-loop safeguard. If you need to change this, you can "disable" it with the option struct `.{ .partial = .{ max_iter = std.math.maxInt(usize) } }`. Do note that you will need to have a lot of memory on your computer if you disable this.
 
 In particular, for CSV files with only a single column per row, this will result in `R*log(C)+R` allocations where `R` is the number of  and `C` is the length of each column. The extra `+R` is there to account for the final column value allocation. For CSV files with multiple columns per row, this will result in `R*log(C_max)+count(F)` allocations where `C_max` is the maximum column length per row and `count(F)` is the number of fields. This is obviously not ideal, especially since in practice you should see performance similar to `Nlog(N)` for very large columns.
 
@@ -411,12 +558,12 @@ Alternatively, if we know that our data will never exceed a threshold, then we c
 
 #### Maximum field size (not on the stack)
 
-By default, the `FieldStreamPartial` will have a maximum of 4GB per field as part of an infinite-loop detection safeguard. While this will allow you to parse almost any CSV file, it may do so at the cost of availability and out of memory. To lower this limit, we can simply lower the maximum length to something more sane.
+By default, the `FieldStreamPartial` will have a maximum of 64K per field as part of an infinite-loop detection safeguard. While this will allow you to parse almost any CSV file, it may do so at the cost of availability and out of memory. To lower this limit, we can simply lower the maximum length to something more sane.
 
 ```zig
 var parser = zscv.column(reader, .{
     // Use a more sane max 1KB per field (though it's still big)
-    .buffer = .{ .heap = .{ .max_len = 1_024 } },
+    .buffer = .{ .heap = .{ .max_iter = 1_024 } },
 });
 ```
 
@@ -434,11 +581,11 @@ var parser = zscv.column(reader, .{
 
 #### Stack based buffer
 
-Another optimization is to switch from a heap-based intermediate buffer to a stack-based intermediate buffer. This does require we have a much more reasonable maximum limit than 4GB per field. We can switch to using the stack with the following:
+Another optimization is to switch from a heap-based intermediate buffer to a stack-based intermediate buffer. This does require we have a much more reasonable maximum limit than 64K per field. We can switch to using the stack with the following:
 
 ```zig
 var parser = zscv.column(reader, .{
-    .buffer = .{ .stack = .{ .max_len = 1_024 } },
+    .buffer = .{ .stack = .{ .max_iter = 1_024 } },
 });
 ```
 
@@ -539,4 +686,16 @@ while(true) {
 // Oh no! Use after free!
 std.debug.print("{s}", .{firstField.items});
 ```
+
+## Recommended Parser Selection
+
+If you're app doesn't need to parse massive CSV files quickly, and you're okay with memory allocations per field, then I'd recommend using one of the allocating parsers since they are more ergonomic for usage. My recommendation is to use the map parsers whenever you have a header, and use the column parser when you don't.
+
+For the map parsers, I would generally recommend using `map_sk` unless you have a need for the map to outlive the row. Most of the time though, a common pattern is to use the map just long enough to populate a struct and then to use the struct instead of a map. This means that the map doesn't need to outlive the row since the struct replaces the keys.
+
+If you have restrictions which makes the allocating parsers infeasible, then I'd recommend using either one of the slice parsers (slice array or slice field), or one of the streaming parsers. I'd use the slice parsers if you can fit the CSV into memory. If loading into memory isn't an option, then I'd use one of the field streaming parsers.
+
+## License
+
+This code is licensed under the MIT license.
 

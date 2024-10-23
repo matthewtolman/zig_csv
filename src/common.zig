@@ -18,8 +18,15 @@ const ParseBoolError = error{
     InvalidBoolInput,
 };
 
+/// Options for Partial Field Stream
+pub const ParserLimitOpts = struct {
+    max_iter: usize = 4_294_967_296,
+};
+
 const std = @import("std");
 
+/// Unquotes a quoted CSV field
+/// Assumes the field is a valid CSV field
 pub fn unquoteQuoted(data: []const u8) []const u8 {
     if (data.len > 1 and data[0] == '"') {
         return data[1..(data.len - 1)];
@@ -214,5 +221,60 @@ test "asBool" {
 
     for (test_cases) |tc| {
         try std.testing.expectEqual(tc.out, try asBool(tc.in));
+    }
+}
+
+/// Decodes the array CSV data into a writer
+/// This will remove surrounding quotes and unescape escaped quotes
+pub fn decode(field: []const u8, writer: anytype) !void {
+    if (field.len < 2 or field[0] != '"') {
+        try writer.writeAll(field);
+        return;
+    }
+
+    const data = unquoteQuoted(field);
+    var nextChar: ?u8 = if (1 < data.len) data[1] else null;
+    var curChar: ?u8 = if (0 < data.len) data[0] else null;
+    var ni: usize = 1;
+
+    while (curChar) |c| {
+        defer {
+            ni += 1;
+            curChar = nextChar;
+            nextChar = if (ni < data.len) data[ni] else null;
+        }
+        if (c != '"') {
+            try writer.writeByte(c);
+            continue;
+        }
+
+        if (nextChar == '"') {
+            defer {
+                ni += 1;
+                curChar = nextChar;
+                nextChar = if (ni < data.len) data[ni] else null;
+            }
+            try writer.writeByte(c);
+        }
+    }
+}
+
+test "decode" {
+    const test_cases = [_]struct {
+        in: []const u8,
+        out: []const u8,
+    }{
+        .{ .in = "", .out = "" },
+        .{ .in = "\"hello\"", .out = "hello" },
+        .{ .in = "hello", .out = "hello" },
+        .{ .in = "\"\"\"\"", .out = "\"" },
+        .{ .in = "\"hello\"\"world\"", .out = "hello\"world" },
+    };
+
+    for (test_cases) |tc| {
+        var b: [64]u8 = undefined;
+        var buff = std.io.fixedBufferStream(&b);
+        try decode(tc.in, buff.writer());
+        try std.testing.expectEqualStrings(tc.out, buff.getWritten());
     }
 }

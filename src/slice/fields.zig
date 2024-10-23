@@ -100,12 +100,14 @@ const ParserState = struct {
 pub const Parser = struct {
     _text: []const u8,
     err: ?CsvReadError = null,
+    _opts: common.ParserLimitOpts,
     _state: ParserState = .{},
 
     /// Initializes a parser
-    pub fn init(text: []const u8) Parser {
+    pub fn init(text: []const u8, opts: common.ParserLimitOpts) Parser {
         return Parser{
             ._text = text,
+            ._opts = opts,
             .err = null,
         };
     }
@@ -147,8 +149,11 @@ pub const Parser = struct {
         self._state.field_start = false;
 
         // This means we need to find our next field ending
-        while (self._state.field_separators == 0 and self.hasNextChunk()) {
+        const MAX_CHUNK_LEN = self._opts.max_iter;
+        var index: usize = 0;
+        while (self._state.field_separators == 0 and self.hasNextChunk() and index < MAX_CHUNK_LEN) {
             defer {
+                index += 1;
                 self._state.end_chunk = self._state.next_chunk;
                 self._state.next_chunk += 1;
             }
@@ -160,15 +165,15 @@ pub const Parser = struct {
 
             const match_commas = match(',', chunk);
 
-            const cr_matches = match('\r', chunk);
-            defer self._state.prev_cr = cr_matches;
+            const match_crs = match('\r', chunk);
+            defer self._state.prev_cr = match_crs;
 
-            var lf_matches = match('\n', chunk);
+            var match_lfs = match('\n', chunk);
 
             const len: u8 = extract;
 
             if (len < chunk_size) {
-                lf_matches |= @as(u64, 1) << @truncate(len);
+                match_lfs |= @as(u64, 1) << @truncate(len);
             }
 
             const carry: u64 = @bitCast(-%@as(
@@ -181,10 +186,10 @@ pub const Parser = struct {
             const unquoted = ~quoted;
 
             const field_commas = match_commas & unquoted;
-            const field_crs = cr_matches & unquoted;
-            const field_lfs = lf_matches & unquoted;
+            const field_crs = match_crs & unquoted;
+            const field_lfs = match_lfs & unquoted;
 
-            const expected_lfs = (cr_matches << 1) | (self._state.prev_cr >> (chunk_size - 1));
+            const expected_lfs = (match_crs << 1) | (self._state.prev_cr >> (chunk_size - 1));
             const masked_lfs = expected_lfs & field_lfs;
 
             if (@popCount(expected_lfs) != @popCount(masked_lfs)) {
@@ -236,6 +241,12 @@ pub const Parser = struct {
                 return null;
             }
         }
+
+        if (index >= MAX_CHUNK_LEN) {
+            self.err = CsvReadError.InternalLimitReached;
+            return null;
+        }
+
         const chunk_end = @ctz(self._state.field_separators);
         const t_end = (self._state.end_chunk * 64) + chunk_end;
         const end_pos = @min(self._text.len - 1, t_end);
@@ -281,8 +292,8 @@ pub const Parser = struct {
 };
 
 /// Initializes parser
-pub fn init(text: []const u8) Parser {
-    return Parser.init(text);
+pub fn init(text: []const u8, opts: common.ParserLimitOpts) Parser {
+    return Parser.init(text, opts);
 }
 
 test "simd array" {
@@ -296,7 +307,7 @@ test "simd array" {
         \\r5,abc,def,geh,""""
         \\r6,""""," "" ",hello,"b b b"
     ;
-    var parser = init(csv);
+    var parser = init(csv, .{});
 
     const expected_fields: usize = 35;
     const expected_lines: usize = 7;
@@ -348,7 +359,7 @@ test "array field streamer" {
         \\York",43,no,
         \\4,,,no,
     ;
-    var parser = init(input);
+    var parser = init(input, .{});
 
     const expected = [_][]const u8{
         "userid", "name",                    "age", "active", "",
@@ -397,7 +408,7 @@ test "slice streamer" {
         \\35,"""""""""",1,no,
     ;
 
-    var parser = init(input);
+    var parser = init(input, .{});
     const expected = [_][]const u8{
         "userid", "name",                    "age", "active", "",
         "1",      "John Doe",                "23",  "no",     "",
@@ -494,7 +505,7 @@ test "slice iterator" {
     };
 
     for (tests) |testCase| {
-        var iterator = Parser.init(testCase.input);
+        var iterator = Parser.init(testCase.input, .{});
         var cnt: usize = 0;
         while (iterator.next()) |_| {
             cnt += 1;
@@ -516,7 +527,7 @@ test "row and field iterator" {
 
     const fieldCount = 9;
 
-    var parser = Parser.init(input);
+    var parser = Parser.init(input, .{});
     var cnt: usize = 0;
     while (parser.next()) |_| {
         cnt += 1;

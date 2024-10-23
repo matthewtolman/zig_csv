@@ -1,6 +1,7 @@
 const CsvReadError = @import("../common.zig").CsvReadError;
 const fields = @import("fields.zig");
 const std = @import("std");
+const ParserLimitOpts = @import("../common.zig").ParserLimitOpts;
 
 /// Iterates over fields in a CSV row
 pub const RowIter = struct {
@@ -14,12 +15,19 @@ pub const RowIter = struct {
 /// A CSV row
 pub const Row = struct {
     _data: []const u8,
+    _opts: ParserLimitOpts,
 
     pub fn iter(self: Row) RowIter {
         return RowIter{
-            ._field_parser = fields.init(self._data),
+            ._field_parser = fields.init(self._data, self._opts),
         };
     }
+};
+
+/// Options for the parser
+pub const Options = struct {
+    row_limits: ParserLimitOpts = .{},
+    field_limits: ParserLimitOpts = .{},
 };
 
 /// A CSV row parser
@@ -28,6 +36,7 @@ pub const Row = struct {
 pub const Parser = struct {
     _text: []const u8,
     _field_parser: fields.Parser,
+    _opts: Options,
     err: ?CsvReadError = null,
 
     /// Gets the next row in a row
@@ -38,7 +47,15 @@ pub const Parser = struct {
 
         const start = self._field_parser.startPos();
         var end = start;
+
+        const MAX_ITER = self._opts.row_limits.max_iter;
+        var index: usize = 0;
         while (self._field_parser.next()) |f| {
+            if (index >= MAX_ITER) {
+                self.err = CsvReadError.InternalLimitReached;
+                return null;
+            }
+            defer index += 1;
             self.err = self._field_parser.err;
             if (self.err) |_| {
                 return null;
@@ -53,21 +70,23 @@ pub const Parser = struct {
 
         return Row{
             ._data = self._text[start..end],
+            ._opts = self._opts.field_limits,
         };
     }
 
     /// Initializes a parser
-    pub fn init(text: []const u8) Parser {
+    pub fn init(text: []const u8, opts: Options) Parser {
         return Parser{
             ._text = text,
-            ._field_parser = fields.init(text),
+            ._opts = opts,
+            ._field_parser = fields.init(text, opts.field_limits),
         };
     }
 };
 
 /// Initializes a new raw parser
-pub fn init(text: []const u8) Parser {
-    return Parser.init(text);
+pub fn init(text: []const u8, opts: Options) Parser {
+    return Parser.init(text, opts);
 }
 
 test "row iterator" {
@@ -138,7 +157,7 @@ test "row iterator" {
     };
 
     for (tests) |testCase| {
-        var iterator = Parser.init(testCase.input);
+        var iterator = Parser.init(testCase.input, .{});
         var cnt: usize = 0;
         while (iterator.next()) |_| {
             cnt += 1;
@@ -160,7 +179,7 @@ test "row and field iterator" {
 
     const fieldCount = 9;
 
-    var parser = Parser.init(input);
+    var parser = Parser.init(input, .{});
     var cnt: usize = 0;
     while (parser.next()) |row| {
         var iter = row.iter();

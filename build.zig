@@ -62,6 +62,9 @@ pub fn build(b: *std.Build) void {
         .{ .file = "examples/06_parse_map.zig", .name = "example_6" },
         .{ .file = "examples/07_parse_map_copy_key.zig", .name = "example_7" },
         .{ .file = "examples/08_write_csv.zig", .name = "example_8" },
+        .{ .file = "examples/09_fast_field_stream.zig", .name = "example_9" },
+        .{ .file = "examples/10_fast_array.zig", .name = "example_10" },
+        .{ .file = "examples/11_fast_array_fields.zig", .name = "example_11" },
     };
     {
         for (examples) |example| {

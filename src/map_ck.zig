@@ -2,6 +2,8 @@ const std = @import("std");
 const column = @import("column.zig");
 
 pub const Field = column.Field;
+
+/// Represents a CSV row
 pub const Row = struct {
     _header_mem: std.ArrayList(std.ArrayList(u8)),
     _map: std.StringHashMap(Field),

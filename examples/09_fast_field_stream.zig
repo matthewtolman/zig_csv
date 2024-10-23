@@ -1,4 +1,5 @@
-// This example will print the rows and fields from stdin
+// This example shows how to use the fast CSV field parser
+// Note: the fast parser does NOT do CSV decoding by default
 
 const zcsv = @import("zcsv");
 const std = @import("std");
@@ -15,10 +16,9 @@ pub fn main() !void {
     var buff = std.io.fixedBufferStream(csv);
     const reader = buff.reader();
 
-    var parser = zcsv.stream.FieldStreamPartial(
-        @TypeOf(reader),
-        @TypeOf(stderr),
-    ).init(reader, .{});
+    var tmp_bytes: [1024]u8 = undefined;
+    var tmp_buff = std.io.fixedBufferStream(&tmp_bytes);
+    var parser = zcsv.stream_fast.init(reader, @TypeOf(tmp_buff).Writer, .{});
     std.log.info("Enter CSV to parse", .{});
 
     try stderr.print("> ", .{});
@@ -28,7 +28,9 @@ pub fn main() !void {
     // next does throw if it has an error.
     // next will return `false` when it hits the end of the input
     while (!parser.done()) {
-        try parser.next(stderr);
+        // We have to manually decode the field
+        try parser.next(tmp_buff.writer());
+        try zcsv.core.decode(tmp_buff.getWritten(), stderr);
         // Do whatever you need to here for the field
 
         // This is how you can tell if you're about to move to the next row
