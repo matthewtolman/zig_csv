@@ -90,7 +90,7 @@ if (parser.err) |err| {
 zig fetch --save git+https://github.com/matthewtolman/zig_csv#main
 ```
 
-2. In your `build.zig`, add the `httpz` module as a dependency to your program:
+2. In your `build.zig`, add the `zcsv` module as a dependency to your program:
 ```zig
 const zcsv = b.dependency("zcsv", .{
     .target = target,
