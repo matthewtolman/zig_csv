@@ -19,9 +19,6 @@ pub fn main() !void {
     try stderr.print("> ", .{});
     // The writer is passed to each call to next
     // This allows us to use a different writer per field
-    //
-    // next does throw if it has an error.
-    // next will return `false` when it hits the end of the input
     while (parser.next()) |row| {
         // iterate over fields
         var iter = row.iter();
