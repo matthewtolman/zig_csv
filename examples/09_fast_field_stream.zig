@@ -24,9 +24,6 @@ pub fn main() !void {
     try stderr.print("> ", .{});
     // The writer is passed to each call to next
     // This allows us to use a different writer per field
-    //
-    // next does throw if it has an error.
-    // next will return `false` when it hits the end of the input
     while (!parser.done()) {
         // We have to manually decode the field
         try parser.next(tmp_buff.writer());
