@@ -360,3 +360,65 @@ test "csv field streamer" {
 
     try std.testing.expectEqual(expected.len, ei);
 }
+
+test "crlf, at 63" {
+    const testing = @import("std").testing;
+    var buff = std.ArrayList(u8).init(std.testing.allocator);
+    defer buff.deinit();
+
+    var input = std.io.fixedBufferStream(
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+            ",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+            ",012345678901234567890123456789012345678901234567890123456789\r\n,",
+    );
+
+    const fieldCount = 17;
+
+    const reader = input.reader();
+    var stream = FieldStream(
+        @TypeOf(reader),
+        @TypeOf(buff.writer()),
+        1_024,
+    ).init(reader);
+    var cnt: usize = 0;
+    while (!stream.done()) {
+        try stream.next(buff.writer());
+        defer {
+            buff.clearRetainingCapacity();
+        }
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "crlf,\" at 63" {
+    const testing = @import("std").testing;
+    var buff = std.ArrayList(u8).init(std.testing.allocator);
+    defer buff.deinit();
+
+    var input = std.io.fixedBufferStream(
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+            "\"\",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+            ",012345678901234567890123456789012345678901234567890123456789\r\n,",
+    );
+
+    const fieldCount = 17;
+
+    const reader = input.reader();
+    var stream = FieldStream(
+        @TypeOf(reader),
+        @TypeOf(buff.writer()),
+        1_024,
+    ).init(reader);
+    var cnt: usize = 0;
+    while (!stream.done()) {
+        try stream.next(buff.writer());
+        defer {
+            buff.clearRetainingCapacity();
+        }
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}

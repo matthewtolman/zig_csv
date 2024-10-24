@@ -1,5 +1,6 @@
 const CsvReadError = @import("common.zig").CsvReadError;
 const ParserLimitOpts = @import("common.zig").ParserLimitOpts;
+const assert = @import("std").debug.assert;
 
 /// Iterates over the fields of a CSV row
 pub const RowIterator = struct {
@@ -40,13 +41,8 @@ pub const RowIterator = struct {
             }
         }
 
-        if (index >= MAX_ITER) {
-            unreachable;
-        }
-
-        if (in_quote) {
-            unreachable;
-        }
+        assert(index < MAX_ITER);
+        assert(!in_quote);
 
         defer self._pos = self._row._data.len + 1;
         return self._row._data[self._pos..];
@@ -188,6 +184,7 @@ pub const Parser = struct {
             } else if (cur == '\n') {
                 if (in_quote) continue;
                 defer self._pos = cur_index + 1;
+                assert(cur_index + 1 <= self._text.len);
                 return Row{
                     ._data = self._text[self._pos .. cur_index + 1],
                     ._opts = self._opts,
@@ -206,6 +203,7 @@ pub const Parser = struct {
         }
 
         defer self._pos = self._text.len;
+        assert(self._pos < self._text.len);
 
         return Row{
             ._data = self._text[self._pos..],
@@ -314,6 +312,50 @@ test "row and field iterator" {
     while (parser.next()) |row| {
         var iter = row.iter();
         while (iter.next()) |_| {
+            cnt += 1;
+        }
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "crlf, at 63" {
+    const testing = @import("std").testing;
+
+    const input =
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+        ",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+        ",012345678901234567890123456789012345678901234567890123456789\r\n,";
+
+    const fieldCount = 17;
+
+    var parser = Parser.init(input, .{});
+    var cnt: usize = 0;
+    while (parser.next()) |r| {
+        var it = r.iter();
+        while (it.next()) |_| {
+            cnt += 1;
+        }
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "crlf,\" at 63" {
+    const testing = @import("std").testing;
+
+    const input =
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+        "\"\",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+        ",012345678901234567890123456789012345678901234567890123456789\r\n,";
+
+    const fieldCount = 17;
+
+    var parser = Parser.init(input, .{});
+    var cnt: usize = 0;
+    while (parser.next()) |r| {
+        var it = r.iter();
+        while (it.next()) |_| {
             cnt += 1;
         }
     }
