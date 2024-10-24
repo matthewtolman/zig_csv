@@ -1,5 +1,5 @@
 // This file will take a CLI argument for a file and then parse that CSV file
-// It will then put everything into an array of structs and detach the memory
+// It will then put everything into an array of structs and clone the memory
 // from the row of memory
 
 const zcsv = @import("zcsv");
@@ -75,9 +75,7 @@ pub fn parseFile(alloc: std.mem.Allocator, fileName: []const u8) !std.ArrayList(
 
     // Parse all of our rows
     // We need it mutable for detachMemory to work
-    var row: zcsv.column.Row = undefined;
-    while (true) {
-        row = parser.next() orelse break;
+    while (parser.next()) |row| {
         // Clean up our memory
         defer row.deinit();
 
@@ -111,15 +109,14 @@ pub fn parseFile(alloc: std.mem.Allocator, fileName: []const u8) !std.ArrayList(
         }
 
         // For eachfield
-        const fields = row.fieldsMut();
-        if (maxIndex >= fields.len) {
+        if (maxIndex >= row.len()) {
             return Errors.MissingFields;
         }
 
         try res.append(User{
-            .id = (try fields[columns.get("id").?].asInt(i64, 10)).?,
-            .name = fields[columns.get("name").?].detachMemory(),
-            .age = try fields[columns.get("age").?].asInt(u16, 10),
+            .id = (try (try row.field(columns.get("id").?)).asInt(i64, 10)).?,
+            .name = try (try row.field(columns.get("name").?)).clone(alloc),
+            .age = try (try row.field(columns.get("age").?)).asInt(u16, 10),
         });
     }
 

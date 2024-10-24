@@ -149,6 +149,8 @@ The slices returned by the map have their underlying memory owned by the row. On
 
 Additionally, map parsers will try to parse the header row immediately as part of their initialization. This means that their init function may fail (e.g. allocation error, reader error, invalid header, etc). It also means that if the underlying reader can block then the initialization method may block as well. Do keep this in mind as a potential side effect. Map parsers are the only provided parsers which eagerly parse, so if the side effect is undesireable you may use any of the other parsers (e.g. column parser).
 
+Quoted strings will be unescaped automatically.
+
 Below is an example of using a map parser:
 
 ```zig
@@ -193,7 +195,7 @@ while (parser.next) |row| {
         .id = id.asInt(i64, 10) catch {
             return error.InvalidUserId;
         } orelse return error.MissingUserId,
-        .name = try name.clone(),
+        .name = try name.clone(allocator),
         .age = age.asInt(u16, 10) catch return error.InvalidAge,
     });
 }
@@ -201,7 +203,7 @@ while (parser.next) |row| {
 
 ### Column Parser
 
-The column parser will perform memory allocations. The memory allocations have a memory lifetime tied to the returned row (i.e. calling `row.deinit()` will deallocate all associated memory). Additionally, the parser will unescape quoted strings (i.e. "Johnny ""John"" Doe" will become `Johnny "John" Doe`).
+The column parser will parse a CSV file and make fields accessible by index. The memory for a row and its fields are held by the row (i.e. calling `row.deinit()` will deallocate all associated memory). Additionally, the parser will unescape quoted strings automatically (i.e. "Johnny ""John"" Doe" will become `Johnny "John" Doe`).
 
 Lines are parsed one-by-one allowing for streaming CSV files. It also allows early termination of CSV parsing. Below is an example of parsing CSVs with the parser:
 
@@ -557,62 +559,7 @@ if (parser.err) |err| {
 
 All of the parsers have some sort of "infinite loop protection" built in. Generally, this is a limit to 65,536 maximum loop iteration (unless there's an internal stack buffer, then the internal stack buffer will dictate the limit). This limit can be changed by adjusting the options passed into the parser. This is also why all parsers take options (either comptime or runtime options).
 
-## Parser Details
-
-The parsers have additional details concerning configuration options and memory lifetimes. These details affect the column and map parsers (both `map_sk` and `map_ck`).
-
-### Parser Options
-
-Non-allocating parsers genearlly just take the parser iteration limit options, which are discussed above.
-
-For allocating parsers, there is a compile-time options struct that will determine the underlying characteristics of the parser. This includes choosing between either the `FieldStream` or `FieldStreamPartial` for the internal parsing, as well as determining either the internal buffer limit or infinite-loop safeguard sizes.
-
-By default, the parsers will use `FieldStreamPartial`. When doing so, the parsers will allocate an internal "field receiver" buffer per row, and then will copy the data out of that buffer into the fields proper. The initial capacity of this buffer can be specified, otherwise it uses the default capacity provided by the standard.
-
-This method allows for arbitrary field sizes without knowing anything about the incoming data set. This provides for an easy "getting started" experience, but it does so at the cost of performance, especially in regards to the number of memory allocations.
-
-> Note: By default there is a 65K limit per field as part of an infinite-loop safeguard. If you need to change this, you can "disable" it with the option struct `.{ .partial = .{ max_iter = std.math.maxInt(usize) } }`. Do note that you will need to have a lot of memory on your computer if you disable this.
-
-In particular, for CSV files with only a single column per row, this will result in `R*log(C)+R` allocations where `R` is the number of  and `C` is the length of each column. The extra `+R` is there to account for the final column value allocation. For CSV files with multiple columns per row, this will result in `R*log(C_max)+count(F)` allocations where `C_max` is the maximum column length per row and `count(F)` is the number of fields. This is obviously not ideal, especially since in practice you should see performance similar to `Nlog(N)` for very large columns.
-
-There are a few optimization paths going forward. The first is to optimize the intermediate buffer to have fewer allocations. This can be done by setting the capacity. If we guess correctly, then we can go from `R*log(C_max)` allocations to `R` allocations, thus giving us the formula `R+count(F)` for allocations.
-
-Alternatively, if we know that our data will never exceed a threshold, then we can move our internal buffer from the heap to the stack. This removes the `R*log(C_max)` allocations entirely at the cost of having an error if our data ever exceeds the stack limit. This gives us `count(F)` allocations.
-
-#### Maximum field size (not on the stack)
-
-By default, the `FieldStreamPartial` will have a maximum of 64K per field as part of an infinite-loop detection safeguard. While this will allow you to parse almost any CSV file, it may do so at the cost of availability and out of memory. To lower this limit, we can simply lower the maximum length to something more sane.
-
-```zig
-var parser = zscv.column(reader, .{
-    // Use a more sane max 1KB per field (though it's still big)
-    .buffer = .{ .heap = .{ .max_iter = 1_024 } },
-});
-```
-
-#### Adjusting capacity
-
-To adjust capacity, we simply need to provide the `capacity` parameter to our partil options. A "null" or "0" value will disable capacity initialization. Any other value will ensure our internal receiver array list has an initial capacity at least that big. Example:
-
-```zig
-var parser = zscv.column(reader, .{
-    // Use a 256 byte initial capacity for parsing fields
-    // Capacity resets to 256 bytes on each row
-    .buffer = .{ .heap = .{ .capacity = 256 } },
-});
-```
-
-#### Stack based buffer
-
-Another optimization is to switch from a heap-based intermediate buffer to a stack-based intermediate buffer. This does require we have a much more reasonable maximum limit than 64K per field. We can switch to using the stack with the following:
-
-```zig
-var parser = zscv.column(reader, .{
-    .buffer = .{ .stack = .{ .max_iter = 1_024 } },
-});
-```
-
-### Memory Lifetimes
+## Memory Lifetimes
 
 Slices returned by allocated fields have their underlying memory tied to the lifetime of the row's memory. This means the following will result in a use-after-free:
 
@@ -636,9 +583,14 @@ outer: while (parser.next()) |row| {
 std.debug.print("{s}", .{firstField});
 ```
 
-If you need to have the field memory last past the row lifetime, then use the `clone` or `cloneAlloc` method. `clone` will use the same allocator that the field was allocated with, which does make it undesireable when an `ArenaAllocator` was originally used for the parsing. In those cases, `cloneAlloc` is provided which allows the copy to use a distinct allocator from the original. Below is an example:
+If you need to have the field memory last past the row lifetime, then use the `clone` method. `clone` takes in an allocator to use for cloning the memory to. Below is an example:
 
 ```zig
+// get allocator
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+defer _ = gpa.deinit();
+const allocator = gpa.allocator();
+
 // Copy the memory
 
 var firstField: ?std.ArrayList(u8) = undefined;
@@ -654,7 +606,7 @@ while (parser.next()) |row| {
 
     if (row.fields().len > 0) {
         // Memory is no longer tied to the row
-        firstField = row.fields()[0].clone();
+        firstField = row.fields()[0].clone(allocator);
 
         // alternatively, we could do the following
         // firstField = row.fields()[0].cloneAlloc(allocator);
@@ -666,49 +618,7 @@ while (parser.next()) |row| {
 std.debug.print("{s}", .{firstField});
 ```
 
-This does incur a full memory copy for every field though. For most use cases, the memory and CPU penalty is probably insignificant compared to other bottlenecks.
-
-However, if the full copy is undesireable then there is an alternative method called `detachMemory`. What `detachMemory` does is it "moves" the field memory from the row to the caller. This allows us to extend the lifetime of the field memory while clearing the row memory. Do note that we will be using the original field memory, which means we will be holding memory in the original allocator. This detail can be significant if we are using an arena allocator.
-
-One important note is that detachMemory does require that the row be mutable, and that we use the `fieldsMut` method is used rather than `fields` or `iter` methods.
-
-Below is a detach memory example.
-
-```zig
-// Detach memory example
-
-var firstField: ?std.ArrayList(u8) = null;
-
-// Make sure we free our memory
-defer {
-    if (firstField) |f| {
-        f.deinit();
-    }
-}
-
-// The while(...) |...| pattern gives consts, but for detaching memory
-// we need to make sure we are using mutable memory
-// There may be a better pattern for this, but I'm not familiar with it yet
-var row: Row = undefined;
-while(true) {
-    row = parser.next() orelse break;
-
-    // Free row memory
-    defer row.deinit();
-
-    if (row.fields().len > 0) {
-        // Memory is no longer tied to the row
-        firstField = row.fieldsMut()[0].detachMemory();
-
-        // At this point, row.field()[0].data() will be "" regardless of the
-        // original value...
-        break;
-    }
-}
-
-// Oh no! Use after free!
-std.debug.print("{s}", .{firstField.items});
-```
+> Note: the `detachMemory` method was removed in version 0.4.0. `detachMemory` required that every field get a separate memory allocation which was rather slow. In version 0.4.0 the field memory was merged with the row memory which resulted in a significant speed up, but it also meant that simply detaching field memory was no longer possible.
 
 ## Recommended Parser Selection
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const CsvReadError = @import("common.zig").CsvReadError;
+const ParserLimitOpts = @import("common.zig").ParserLimitOpts;
 
 /// Packed flags and tiny state pieces for field streams
 const FSFlags = packed struct {
@@ -9,11 +10,6 @@ const FSFlags = packed struct {
     // We always start with a field
     // This also means that an empty file will become one "null" field
     _field_start: bool = true,
-};
-
-/// Options for Partial Field Stream
-pub const PartialOpts = struct {
-    max_len: usize = 65_536,
 };
 
 /// A CSV field stream will write fields to an output writer one field at a time
@@ -36,11 +32,11 @@ pub fn FieldStreamPartial(
         _reader: Reader,
         _cur: ?u8 = null,
         _next: ?u8 = null,
-        _opts: PartialOpts = .{},
+        _opts: ParserLimitOpts = .{},
         _flags: FSFlags = .{},
 
         /// Creates a new CSV Field Stream
-        pub fn init(reader: Reader, opts: PartialOpts) @This() {
+        pub fn init(reader: Reader, opts: ParserLimitOpts) @This() {
             return .{
                 ._reader = reader,
                 ._opts = opts,
@@ -123,9 +119,9 @@ pub fn FieldStreamPartial(
 
             // We won't technically hit an infinite loop,
             // but we practically will since this is a lot
-            const MAX_FIELD_LEN = self._opts.max_len;
+            const MAX_ITER = self._opts.max_iter;
             var index: usize = 0;
-            for (0..(MAX_FIELD_LEN + 1)) |i| {
+            for (0..(MAX_ITER + 1)) |i| {
                 index = i;
 
                 if (self._flags._in_quote) {
@@ -199,7 +195,7 @@ pub fn FieldStreamPartial(
                 }
             }
 
-            if (index >= MAX_FIELD_LEN) {
+            if (index >= MAX_ITER) {
                 return CsvReadError.InternalLimitReached;
             }
 
@@ -288,7 +284,7 @@ pub fn FieldStream(
         /// Creates a new CSV Field Stream
         pub fn init(reader: Reader) @This() {
             return .{
-                ._partial = Fs.init(reader, .{ .max_len = buffer_size }),
+                ._partial = Fs.init(reader, .{ .max_iter = buffer_size }),
             };
         }
 

@@ -58,7 +58,7 @@ pub fn build(b: *std.Build) void {
         .{ .file = "examples/02_basic_array.zig", .name = "example_2" },
         .{ .file = "examples/03_basic_field_stream.zig", .name = "example_3" },
         .{ .file = "examples/04_read_file.zig", .name = "example_4" },
-        .{ .file = "examples/05_detach_memory.zig", .name = "example_5" },
+        .{ .file = "examples/05_clone_memory.zig", .name = "example_5" },
         .{ .file = "examples/06_parse_map.zig", .name = "example_6" },
         .{ .file = "examples/07_parse_map_copy_key.zig", .name = "example_7" },
         .{ .file = "examples/08_write_csv.zig", .name = "example_8" },

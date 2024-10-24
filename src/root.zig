@@ -47,8 +47,8 @@ test "imports" {
     _ = slice.fields.init("", .{});
     _ = stream.FieldStreamPartial(Reader, Writer);
     _ = stream_fast.Parser(Reader, Writer);
-    _ = column.Parser(Reader, .{});
+    _ = column.Parser(Reader);
     _ = try writer.row(buff.writer(), .{ 1, "hello", false });
-    _ = map_sk.Parser(Reader, .{});
-    _ = map_ck.Parser(Reader, .{});
+    _ = map_sk.Parser(Reader);
+    _ = map_ck.Parser(Reader);
 }

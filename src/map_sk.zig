@@ -6,6 +6,7 @@ pub const Field = column.Field;
 /// Represents a CSV row
 pub const Row = struct {
     _map: std.StringHashMap(Field),
+    _orig_row: column.Row,
 
     /// Gets a const pointer to the underlying map
     pub fn data(self: *const @This()) *const std.StringHashMap(Field) {
@@ -15,12 +16,9 @@ pub const Row = struct {
     /// Frees the associated memory
     /// Does NOT free map keys since that is held by the parser
     pub fn deinit(self: @This()) void {
-        var valIt = self._map.valueIterator();
-        while (valIt.next()) |v| {
-            v.deinit();
-        }
         var shallowCopy = self._map;
         shallowCopy.deinit();
+        self._orig_row.deinit();
     }
 };
 
@@ -29,8 +27,8 @@ pub const Row = struct {
 /// The map will have each value on the heap, and the key lifetimes are the
 /// same as the parser's lifetime. This avoids memory copies per row, but it
 /// does mean that the parser must outlive the lifetime of each row.
-pub fn Parser(comptime Reader: type, comptime opts: column.ParserOpts) type {
-    const ColParser = column.Parser(Reader, opts);
+pub fn Parser(comptime Reader: type) type {
+    const ColParser = column.Parser(Reader);
     return struct {
         pub const Error = ColParser.Error || error{NoHeaderForColumn};
         _lineParser: ColParser,
@@ -39,7 +37,11 @@ pub fn Parser(comptime Reader: type, comptime opts: column.ParserOpts) type {
         err: ?Error = null,
 
         /// Creates a new map-based parser
-        pub fn init(allocator: std.mem.Allocator, reader: Reader) !@This() {
+        pub fn init(
+            allocator: std.mem.Allocator,
+            reader: Reader,
+            opts: column.ParserOpts,
+        ) !@This() {
             var parser = column.init(allocator, reader, opts);
             const row = parser.next();
             if (parser.err) |err| {
@@ -94,31 +96,24 @@ pub fn Parser(comptime Reader: type, comptime opts: column.ParserOpts) type {
         /// Internal next method that will return errors
         /// Error returning is used so we can use errdefer to clean memory
         fn nextImpl(self: *@This(), row: *column.Row) Error!?Row {
-            var fields = row.fieldsMut();
             var res = Row{
                 ._map = std.StringHashMap(Field).init(self._alloc),
+                ._orig_row = try row.clone(self._alloc),
             };
             // Clean up our memory
             errdefer res.deinit();
 
-            try res._map.ensureTotalCapacity(@truncate(self._header.fields().len));
+            try res._map.ensureTotalCapacity(@truncate(self._header.len()));
 
-            for (fields, 0..) |_, i| {
-                if (i >= self._header.fields().len) {
+            for (0..res._orig_row.len()) |i| {
+                if (i >= self._header.len()) {
                     return Error.NoHeaderForColumn;
-                }
-
-                const header = self._header.fields()[i].data();
-
-                // Avoid memory leaks when headers are duplicated
-                if (res._map.contains(header)) {
-                    res._map.getPtr(header).?.deinit();
                 }
 
                 // Put our field in the memory and reattach memory scope
                 try res._map.put(
-                    header,
-                    Field{ ._data = fields[i].detachMemory() },
+                    (self._header.field(i) catch unreachable).data(),
+                    (res._orig_row.field(i) catch unreachable),
                 );
             }
 
@@ -135,9 +130,9 @@ pub fn Parser(comptime Reader: type, comptime opts: column.ParserOpts) type {
 pub fn init(
     allocator: std.mem.Allocator,
     reader: anytype,
-    comptime opts: column.ParserOpts,
-) !Parser(@TypeOf(reader), opts) {
-    return Parser(@TypeOf(reader), opts).init(allocator, reader);
+    opts: column.ParserOpts,
+) !Parser(@TypeOf(reader)) {
+    return Parser(@TypeOf(reader)).init(allocator, reader, opts);
 }
 
 test "csv parse into map sk" {
