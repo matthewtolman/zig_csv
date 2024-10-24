@@ -86,7 +86,7 @@ pub fn parseFile(alloc: std.mem.Allocator, fileName: []const u8) !std.ArrayList(
             .id = id.asInt(i64, 10) catch {
                 return error.InvalidUserId;
             } orelse return error.MissingUserId,
-            .name = try name.clone(),
+            .name = try name.clone(alloc),
             .age = age.asInt(u16, 10) catch return error.InvalidAge,
         });
     }
