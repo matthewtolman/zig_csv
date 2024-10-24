@@ -20,7 +20,7 @@ const ParseBoolError = error{
 
 /// Options for Partial Field Stream
 pub const ParserLimitOpts = struct {
-    max_iter: usize = 4_294_967_296,
+    max_iter: usize = 65_536,
 };
 
 const std = @import("std");

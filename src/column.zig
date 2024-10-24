@@ -219,7 +219,7 @@ pub const FullStreamOpts = struct {
 /// Options for using FieldStreamPartial as underlying parser
 pub const PartialStreamOpts = struct {
     /// Infinite loop safeguard for maximum field size
-    max_len: usize = 4_294_967_296,
+    max_len: usize = 65_536,
     /// Initial guess for reserving capacity (null = no reserving done)
     capacity: ?usize = null,
 };
