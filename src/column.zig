@@ -9,10 +9,11 @@ const ParserLimitOpts = @import("common.zig").ParserLimitOpts;
 const stream = @import("stream.zig");
 
 /// Internal representation of a field in a row
-pub const RowField = struct {
+const RowField = struct {
     _pos: usize,
     _len: usize,
 
+    /// Converts a RowField to a field for a given row
     pub fn toField(self: RowField, row: *const Row) Field {
         std.debug.assert(self._pos <= row._bytes.items.len);
         std.debug.assert(self._pos + self._len <= row._bytes.items.len);
@@ -187,17 +188,31 @@ pub const Row = struct {
         defer self._bytes.deinit();
     }
 
+    /// Returns the number of fields/columns in a row
     pub fn len(self: *const Row) usize {
         return self._fields.items.len;
     }
 
-    pub fn field(self: *const Row, index: usize) !Field {
+    /// Gets the field/column at an index
+    /// If the index is out of bounds will return an error
+    pub fn field(self: *const Row, index: usize) error.IndexOutOfBounds!Field {
         if (index >= self.len()) {
             return error.IndexOutOfBounds;
         }
         return self._fields.items[index].toField(self);
     }
 
+    /// Gets the field/column at an index
+    /// If the index is out of bounds will return null
+    pub fn fieldOrNull(self: *const Row, index: usize) ?Field {
+        if (index >= self.len()) {
+            return null;
+        }
+        return self._fields.items[index].toField(self);
+    }
+
+    /// Clones a row and its memory
+    /// Used in the map parsers
     pub fn clone(self: *const Row, alloc: std.mem.Allocator) !Row {
         var new = Row{
             ._fields = std.ArrayList(RowField).init(alloc),
