@@ -4,7 +4,9 @@
 
 ZCSV is a CSV parser and writer library. The goal is to provide both writers and parsers which are allocation free while also having a parser which does use memory allocations for a more developer-friendly interface.
 
-Note: All parsers do operate line-by-line for all operations, including validation. This means that partial reads may happen when the first several rows of a file are valid but there is an error in the middle.
+This parser does allow for CRLF and LF characters to be inside quoted fields. It also interprets both unquoted CRLF and unquoted LF characters as newlines. CR characters without a following LF character is considered an invalid line ending.
+
+Note: All parsers do operate either line-by-line or field-by-field for all operations, including validation. This means that partial reads may happen when the first several rows of a file are valid but there is an error in the middle.
 
 ```zig
 // Basic usage writing
