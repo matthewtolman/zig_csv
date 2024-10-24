@@ -2,6 +2,7 @@ const CsvReadError = @import("../common.zig").CsvReadError;
 const ParseBoolError = @import("../common.zig").ParseBoolError;
 const common = @import("../common.zig");
 const std = @import("std");
+const assert = std.debug.assert;
 
 pub const Field = struct {
     data: []const u8,
@@ -10,36 +11,7 @@ pub const Field = struct {
     /// Decodes the array CSV data into a writer
     /// This will remove surrounding quotes and unescape escaped quotes
     pub fn decode(self: Field, writer: anytype) !void {
-        if (self.data.len < 2 or self.data[0] != '"') {
-            try writer.writeAll(self.data);
-            return;
-        }
-
-        const data = common.unquoteQuoted(self.data);
-        var nextChar: ?u8 = if (1 < data.len) data[1] else null;
-        var curChar: ?u8 = if (0 < data.len) data[0] else null;
-        var ni: usize = 1;
-
-        while (curChar) |c| {
-            defer {
-                ni += 1;
-                curChar = nextChar;
-                nextChar = if (ni < data.len) data[ni] else null;
-            }
-            if (c != '"') {
-                try writer.writeByte(c);
-                continue;
-            }
-
-            if (nextChar == '"') {
-                defer {
-                    ni += 1;
-                    curChar = nextChar;
-                    nextChar = if (ni < data.len) data[ni] else null;
-                }
-                try writer.writeByte(c);
-            }
-        }
+        try common.decode(self.data, writer);
     }
 
     /// Returns whether a field is "null"
@@ -93,6 +65,7 @@ const ParserState = struct {
     end_chunk: u64 = 0,
     next_chunk: u64 = 0,
     field_start: bool = true,
+    skip: bool = false,
 };
 
 /// Fast fields parser
@@ -114,7 +87,11 @@ pub const Parser = struct {
 
     /// Gets the current start position
     pub fn startPos(self: *const Parser) u64 {
-        return self._state.start_chunk * 64 + self._state.start_chunk_pos;
+        const base = self._state.start_chunk * 64 + self._state.start_chunk_pos;
+        if (self._state.skip) {
+            return base + 1;
+        }
+        return base;
     }
 
     /// Returns if a parser is done
@@ -142,11 +119,13 @@ pub const Parser = struct {
         if (self.done()) {
             if (self._state.field_start) {
                 self._state.field_start = false;
-                return Field{ .data = self._text[(self._text.len)..], .row_end = true };
+                return Field{ .data = self._text[self._text.len..], .row_end = true };
             }
             return null;
         }
         self._state.field_start = false;
+        assert(self.startPos() < self._text.len);
+        assert(self.err == null);
 
         // This means we need to find our next field ending
         const MAX_CHUNK_LEN = self._opts.max_iter;
@@ -157,8 +136,14 @@ pub const Parser = struct {
                 self._state.end_chunk = self._state.next_chunk;
                 self._state.next_chunk += 1;
             }
-            const sub_text = self._text[(self._state.next_chunk * 64)..];
+
+            const next_chunk_start = self._state.next_chunk * 64;
+            assert(next_chunk_start < self._text.len);
+
+            const sub_text = self._text[next_chunk_start..];
             const extract = @min(chunk_size, sub_text.len);
+            assert(extract <= sub_text.len);
+
             const chunk = sub_text[0..extract];
 
             const match_quotes: u64 = match('"', chunk);
@@ -198,8 +183,18 @@ pub const Parser = struct {
             }
 
             const field_seps = field_commas | field_crs | field_lfs;
+
             self._state.field_separators = field_seps;
-            defer self._state.prev_field_seps = field_seps;
+            defer {
+                // if we ended on a CR previously, make sure to clear it from the
+                // field separators, otherwise we end up getting a bad start position
+                // We don't remove it from field_seps since we need it for line
+                // ending validation
+                if (self._state.prev_cr & (1 << (chunk_size - 1)) != 0) {
+                    self._state.field_separators &= ~@as(u64, 1);
+                }
+                self._state.prev_field_seps = field_seps;
+            }
 
             const quote_strings = match_quotes | quoted;
 
@@ -250,26 +245,40 @@ pub const Parser = struct {
         const chunk_end = @ctz(self._state.field_separators);
         const t_end = (self._state.end_chunk * 64) + chunk_end;
         const end_pos = @min(self._text.len - 1, t_end);
+        assert(self._state.end_chunk >= self._state.start_chunk);
 
-        const field = self._text[self.startPos()..@min(self._text.len, t_end)];
+        const field_end = @min(self._text.len, t_end);
+        assert(self.startPos() < self._text.len);
+        assert(field_end <= self._text.len);
+
+        const field = self._text[self.startPos()..field_end];
         const row_end = if (t_end >= self._text.len) true else self._text[end_pos] == '\r' or self._text[end_pos] == '\n';
 
+        self._state.skip = false;
         self._state.start_chunk = self._state.end_chunk;
         self._state.start_chunk_pos = chunk_end + 1;
         self._state.field_separators ^= @as(u64, 1) << @truncate(chunk_end);
+
         if (end_pos < self._text.len and self._text[end_pos] == '\r') {
-            self._state.field_separators ^= @as(u64, 1) << @truncate(chunk_end + 1);
-            self._state.start_chunk_pos = chunk_end + 2;
+            if (chunk_end + 1 < chunk_size - 1) {
+                self._state.field_separators ^= @as(u64, 1) << @truncate(chunk_end + 1);
+                self._state.start_chunk_pos = chunk_end + 2;
+            } else {
+                // Handle the edge case we end a chunk on a CR
+                // In this case, we need to go through the loop again to
+                // hit the LF
+                // Additionally, we need to not output an empty field on the LF
+                self._state.field_separators = 0;
+                self._state.skip = true;
+            }
         }
 
-        if (self.done()) {
-            if (self._text[self._text.len - 1] == ',') {
-                self._state.field_start = true;
-                return Field{
-                    .data = field,
-                    .row_end = false,
-                };
-            }
+        if (self.done() and self._text[self._text.len - 1] == ',') {
+            self._state.field_start = true;
+            return Field{
+                .data = field,
+                .row_end = false,
+            };
         }
 
         return Field{
@@ -526,6 +535,44 @@ test "row and field iterator" {
     ;
 
     const fieldCount = 9;
+
+    var parser = Parser.init(input, .{});
+    var cnt: usize = 0;
+    while (parser.next()) |_| {
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "crlf, at 63" {
+    const testing = @import("std").testing;
+
+    const input =
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+        ",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+        ",012345678901234567890123456789012345678901234567890123456789\r\n,";
+
+    const fieldCount = 17;
+
+    var parser = Parser.init(input, .{});
+    var cnt: usize = 0;
+    while (parser.next()) |_| {
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "crlf\", at 63" {
+    const testing = @import("std").testing;
+
+    const input =
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+        "\"\",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+        ",012345678901234567890123456789012345678901234567890123456789\r\n,";
+
+    const fieldCount = 17;
 
     var parser = Parser.init(input, .{});
     var cnt: usize = 0;

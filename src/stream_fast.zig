@@ -125,31 +125,35 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
                 // If we have a field to print, print it
                 if (self._state.field_separators != 0) {
                     const chunk_end = @ctz(self._state.field_separators);
-                    if (chunk_end > self._state.cur_bytes_len or self._state.cur_bytes_pos >= self._state.cur_bytes_len) {
-                        self._state.field_separators = 0;
-                    } else {
-                        std.debug.assert(self._state.cur_bytes_pos < chunk_size);
-                        std.debug.assert(chunk_end <= chunk_size);
+                    std.debug.assert(chunk_end <= self._state.cur_bytes_len);
+                    std.debug.assert(self._state.cur_bytes_pos < chunk_size);
+                    std.debug.assert(chunk_end <= chunk_size);
 
-                        const end_pos = @min(self._state.cur_bytes_len, chunk_end);
-                        if (chunk_end - self._state.cur_bytes_pos > 0) {
-                            const out = self._state.cur_bytes[self._state.cur_bytes_pos..chunk_end];
-                            std.debug.assert(out.len <= chunk_size);
-                            try writer.writeAll(out);
-                        }
-                        self._row_end = self._state.cur_bytes[end_pos] == '\r' or self._state.cur_bytes[end_pos] == '\n';
+                    const end_pos = @min(self._state.cur_bytes_len, chunk_end);
+                    const out = self._state.cur_bytes[self._state.cur_bytes_pos..chunk_end];
+                    std.debug.assert(out.len <= chunk_size);
+                    try writer.writeAll(out);
 
-                        self._state.field_separators ^= @as(u64, 1) << @truncate(chunk_end);
-                        self._state.cur_bytes_pos = chunk_end + 1;
+                    self._row_end = self._state.cur_bytes[end_pos] == '\r' or self._state.cur_bytes[end_pos] == '\n';
 
-                        if (end_pos < self._state.cur_bytes_len and self._state.cur_bytes[end_pos] == '\r') {
+                    self._state.field_separators ^= @as(u64, 1) << @truncate(chunk_end);
+                    self._state.cur_bytes_pos = chunk_end + 1;
+
+                    if (end_pos < self._state.cur_bytes_len and self._state.cur_bytes[end_pos] == '\r') {
+                        if (chunk_end + 1 < chunk_size - 1) {
                             self._state.field_separators ^= @as(u64, 1) << @truncate(chunk_end + 1);
                             self._state.cur_bytes_pos = chunk_end + 2;
+                        } else {
+                            // Handle the edge case we end a chunk on a CR
+                            // In this case, we need to go through the loop again to
+                            // hit the LF
+                            // Additionally, we need to not output an empty field on the LF
+                            self._state.field_separators = 0;
                         }
+                    }
 
-                        if (end_pos < self._state.cur_bytes_len and self._state.cur_bytes[end_pos] == ',') {
-                            self._state.field_start = true;
-                        }
+                    if (end_pos < self._state.cur_bytes_len and self._state.cur_bytes[end_pos] == ',') {
+                        self._state.field_start = true;
                     }
                     return;
                 }
@@ -206,7 +210,16 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
 
                 const field_seps = field_commas | field_crs | field_lfs;
                 self._state.field_separators = field_seps;
-                defer self._state.prev_field_seps = field_seps;
+                defer {
+                    // if we ended on a CR previously, make sure to clear it from the
+                    // field separators, otherwise we end up getting a bad start position
+                    // We don't remove it from field_seps since we need it for line
+                    // ending validation
+                    if (self._state.prev_cr & (1 << (chunk_size - 1)) != 0) {
+                        self._state.field_separators &= ~@as(u64, 1);
+                    }
+                    self._state.prev_field_seps = field_seps;
+                }
 
                 const quote_strings = match_quotes | quoted;
 
@@ -515,6 +528,54 @@ test "row and field iterator" {
     );
 
     const fieldCount = 9;
+
+    var b: [100]u8 = undefined;
+    var buff = std.io.fixedBufferStream(&b);
+    var parser = init(input.reader(), @TypeOf(buff.writer()), .{});
+    var cnt: usize = 0;
+    while (!parser.done()) {
+        buff.reset();
+        try parser.next(buff.writer());
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "crlf, at 63" {
+    const testing = @import("std").testing;
+
+    var input = std.io.fixedBufferStream(
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+            ",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+            ",012345678901234567890123456789012345678901234567890123456789\r\n,",
+    );
+
+    const fieldCount = 17;
+
+    var b: [100]u8 = undefined;
+    var buff = std.io.fixedBufferStream(&b);
+    var parser = init(input.reader(), @TypeOf(buff.writer()), .{});
+    var cnt: usize = 0;
+    while (!parser.done()) {
+        buff.reset();
+        try parser.next(buff.writer());
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "crlf\", at 63" {
+    const testing = @import("std").testing;
+
+    var input = std.io.fixedBufferStream(
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+            "\"\",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+            ",012345678901234567890123456789012345678901234567890123456789\r\n,",
+    );
+
+    const fieldCount = 17;
 
     var b: [100]u8 = undefined;
     var buff = std.io.fixedBufferStream(&b);

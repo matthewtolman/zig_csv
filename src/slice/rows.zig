@@ -1,6 +1,7 @@
 const CsvReadError = @import("../common.zig").CsvReadError;
 const fields = @import("fields.zig");
 const std = @import("std");
+const assert = std.debug.assert;
 const ParserLimitOpts = @import("../common.zig").ParserLimitOpts;
 
 /// Iterates over fields in a CSV row
@@ -67,6 +68,10 @@ pub const Parser = struct {
             }
         }
         self.err = self._field_parser.err;
+
+        assert(start < self._text.len);
+        assert(end <= self._text.len);
+        assert(end >= start);
 
         return Row{
             ._data = self._text[start..end],
