@@ -582,3 +582,22 @@ test "crlf\", at 63" {
 
     try testing.expectEqual(fieldCount, cnt);
 }
+
+test "crlfa, at 63" {
+    const testing = @import("std").testing;
+
+    const input =
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+        "a,,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+        ",012345678901234567890123456789012345678901234567890123456789\r\n,";
+
+    const fieldCount = 17;
+
+    var parser = Parser.init(input, .{});
+    var cnt: usize = 0;
+    while (parser.next()) |_| {
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}

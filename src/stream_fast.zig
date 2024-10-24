@@ -589,3 +589,27 @@ test "crlf\", at 63" {
 
     try testing.expectEqual(fieldCount, cnt);
 }
+
+test "crlfa, at 63" {
+    const testing = @import("std").testing;
+
+    var input = std.io.fixedBufferStream(
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+            "a,,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+            ",012345678901234567890123456789012345678901234567890123456789\r\n,",
+    );
+
+    const fieldCount = 17;
+
+    var b: [100]u8 = undefined;
+    var buff = std.io.fixedBufferStream(&b);
+    var parser = init(input.reader(), @TypeOf(buff.writer()), .{});
+    var cnt: usize = 0;
+    while (!parser.done()) {
+        buff.reset();
+        try parser.next(buff.writer());
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
