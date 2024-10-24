@@ -178,6 +178,7 @@ pub const RowIter = struct {
 /// Make sure to call Row.denit()
 /// Row.denit() will clean all memory owned by the Row (including field memory)
 pub const Row = struct {
+    const OutOfBoundsError = error{IndexOutOfBounds};
     _fields: std.ArrayList(RowField),
     /// Holds the byte data for all of the fields
     _bytes: std.ArrayList(u8),
@@ -195,9 +196,9 @@ pub const Row = struct {
 
     /// Gets the field/column at an index
     /// If the index is out of bounds will return an error
-    pub fn field(self: *const Row, index: usize) error.IndexOutOfBounds!Field {
+    pub fn field(self: *const Row, index: usize) OutOfBoundsError!Field {
         if (index >= self.len()) {
-            return error.IndexOutOfBounds;
+            return OutOfBoundsError.IndexOutOfBounds;
         }
         return self._fields.items[index].toField(self);
     }
