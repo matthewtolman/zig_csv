@@ -15,7 +15,7 @@ pub fn main() !void {
     var buff = std.io.fixedBufferStream(csv);
     const reader = buff.reader();
 
-    var parser = zcsv.stream.FieldStreamPartial(
+    var parser = zcsv.stream.Parser(
         @TypeOf(reader),
         @TypeOf(stderr),
     ).init(reader, .{});
