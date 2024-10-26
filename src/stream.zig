@@ -258,58 +258,6 @@ test "csv field streamer partial" {
     try std.testing.expectEqual(expected.len, ei);
 }
 
-/// A CSV field stream will write fields to an output writer one field at a time
-/// To know the row of the last read field, use the "row" property (starts at 0)
-/// The next function may error (e.g. parse error or stream error)
-/// The buffer size must be passed in at compile time
-pub fn FieldStream(
-    comptime Reader: type,
-    comptime Writer: type,
-    comptime buffer_size: usize,
-) type {
-    if (comptime buffer_size == 0) {
-        @compileError("A non-zero buffer size must be given");
-    }
-
-    const Fs = FieldStreamPartial(
-        Reader,
-        std.io.FixedBufferStream([]u8).Writer,
-    );
-    return struct {
-        pub const ReadError = Fs.ReadError;
-        pub const WriteError = Fs.WriteError;
-        pub const Error = Fs.Error;
-        _partial: Fs,
-
-        /// Creates a new CSV Field Stream
-        pub fn init(reader: Reader) @This() {
-            return .{
-                ._partial = Fs.init(reader, .{ .max_iter = buffer_size }),
-            };
-        }
-
-        /// Returns whether the field just parsed was at the end of a row
-        pub fn atRowEnd(self: @This()) bool {
-            return self._partial.atRowEnd();
-        }
-
-        /// Returns we're at the end of the input
-        pub fn done(self: @This()) bool {
-            return self._partial.done();
-        }
-
-        /// Parse the next field
-        pub fn next(self: *@This(), writer: Writer) !void {
-            var b: [buffer_size]u8 = undefined;
-            var buff = std.io.fixedBufferStream(&b);
-            const _writer = buff.writer();
-
-            try self._partial.next(_writer);
-            try writer.writeAll(buff.getWritten());
-        }
-    };
-}
-
 test "csv field streamer" {
     // get our writer
     var buff = std.ArrayList(u8).init(std.testing.allocator);
@@ -325,10 +273,9 @@ test "csv field streamer" {
         \\4,,,no,
     );
     const reader = input.reader();
-    var stream = FieldStream(
+    var stream = Parser(
         @TypeOf(reader),
         @TypeOf(buff.writer()),
-        1_024,
     ).init(reader);
 
     const expected = [_][]const u8{
@@ -371,11 +318,7 @@ test "crlf, at 63" {
     const fieldCount = 17;
 
     const reader = input.reader();
-    var stream = FieldStream(
-        @TypeOf(reader),
-        @TypeOf(buff.writer()),
-        1_024,
-    ).init(reader);
+    var stream = Parser(@TypeOf(reader), @TypeOf(buff.writer())).init(reader);
     var cnt: usize = 0;
     while (!stream.done()) {
         try stream.next(buff.writer());
@@ -402,11 +345,7 @@ test "crlf,\" at 63" {
     const fieldCount = 17;
 
     const reader = input.reader();
-    var stream = FieldStream(
-        @TypeOf(reader),
-        @TypeOf(buff.writer()),
-        1_024,
-    ).init(reader);
+    var stream = Parser(@TypeOf(reader), @TypeOf(buff.writer())).init(reader);
     var cnt: usize = 0;
     while (!stream.done()) {
         try stream.next(buff.writer());
