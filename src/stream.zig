@@ -12,6 +12,19 @@ const FSFlags = packed struct {
     _field_start: bool = true,
 };
 
+/// Initializes a CSV field parser with the given reader and options.
+/// The parser will read fields one at a time from the reader, writing them
+/// to an output writer. Fields are parsed based on the configured `ParserLimitOpts`.
+pub fn init(comptime Reader: type, comptime Writer: type, reader: Reader, opts: ParserLimitOpts, flags: FSFlags) Parser(Reader, Writer) {
+    return Parser(Reader, Writer){
+        ._reader = reader,
+        ._cur = null,
+        ._next = null,
+        ._opts = opts,
+        ._flags = flags,
+    };
+}
+
 /// A CSV field stream will write fields to an output writer one field at a time
 /// To know the row of the last read field, use the "row" property (starts at 0)
 /// The next function may error (e.g. parse error or stream error)
@@ -19,7 +32,7 @@ const FSFlags = packed struct {
 /// Partial writes will be made to the writer, even if there is a parse error
 /// later on
 /// This is since the streamer will parse one character at a time with no
-/// lookahead
+/// lookaheadV
 pub fn Parser(
     comptime Reader: type,
     comptime Writer: type,
@@ -225,10 +238,13 @@ test "csv field streamer partial" {
     );
     const reader = input.reader();
 
-    var stream = Parser(
+    var stream = init(
         @TypeOf(reader),
         @TypeOf(buff.writer()),
-    ).init(reader, .{});
+        reader,
+        .{},
+        .{},
+    );
 
     const expected = [_][]const u8{
         "userid", "name",                    "age", "active", "",
@@ -276,7 +292,7 @@ test "csv field streamer" {
     var stream = Parser(
         @TypeOf(reader),
         @TypeOf(buff.writer()),
-    ).init(reader);
+    ).init(reader, .{});
 
     const expected = [_][]const u8{
         "userid", "name",                    "age", "active", "",
@@ -318,7 +334,7 @@ test "crlf, at 63" {
     const fieldCount = 17;
 
     const reader = input.reader();
-    var stream = Parser(@TypeOf(reader), @TypeOf(buff.writer())).init(reader);
+    var stream = Parser(@TypeOf(reader), @TypeOf(buff.writer())).init(reader, .{});
     var cnt: usize = 0;
     while (!stream.done()) {
         try stream.next(buff.writer());
@@ -345,7 +361,14 @@ test "crlf,\" at 63" {
     const fieldCount = 17;
 
     const reader = input.reader();
-    var stream = Parser(@TypeOf(reader), @TypeOf(buff.writer())).init(reader);
+    var stream = init(
+        @TypeOf(reader),
+        @TypeOf(buff.writer()),
+        reader,
+        .{},
+        .{},
+    );
+
     var cnt: usize = 0;
     while (!stream.done()) {
         try stream.next(buff.writer());
