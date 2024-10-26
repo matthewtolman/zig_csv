@@ -45,7 +45,7 @@ test "imports" {
     const Writer = @TypeOf(buff.writer());
     _ = raw.init("", .{});
     _ = slice.fields.init("", .{});
-    _ = stream.FieldStreamPartial(Reader, Writer);
+    _ = stream.Parser(Reader, Writer);
     _ = stream_fast.Parser(Reader, Writer);
     _ = column.Parser(Reader);
     _ = try writer.row(buff.writer(), .{ 1, "hello", false });
