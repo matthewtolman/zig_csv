@@ -20,7 +20,7 @@ const FSFlags = packed struct {
 /// later on
 /// This is since the streamer will parse one character at a time with no
 /// lookahead
-pub fn FieldStreamPartial(
+pub fn Parser(
     comptime Reader: type,
     comptime Writer: type,
 ) type {
@@ -225,7 +225,7 @@ test "csv field streamer partial" {
     );
     const reader = input.reader();
 
-    var stream = FieldStreamPartial(
+    var stream = Parser(
         @TypeOf(reader),
         @TypeOf(buff.writer()),
     ).init(reader, .{});
