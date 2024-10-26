@@ -247,7 +247,7 @@ pub const ParserOpts = struct {
 /// Memory is owned by returned rows, so call Row.deinit()
 pub fn Parser(comptime Reader: type) type {
     const Writer = std.ArrayList(u8).Writer;
-    const Fs = stream.FieldStreamPartial(Reader, Writer);
+    const Fs = stream.Parser(Reader, Writer);
     return struct {
         pub const Error = Fs.Error || std.mem.Allocator.Error || error{
             EndOfInput,
