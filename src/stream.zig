@@ -32,7 +32,7 @@ pub fn init(comptime Reader: type, comptime Writer: type, reader: Reader, opts: 
 /// Partial writes will be made to the writer, even if there is a parse error
 /// later on
 /// This is since the streamer will parse one character at a time with no
-/// lookaheadV
+/// lookahead
 pub fn Parser(
     comptime Reader: type,
     comptime Writer: type,
