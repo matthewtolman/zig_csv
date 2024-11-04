@@ -45,8 +45,7 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
         }
 
         pub fn atRowEnd(self: *const @This()) bool {
-            const res = self.done() or self._row_end;
-            return res;
+            return self.done() or self._row_end;
         }
 
         /// Returns if a parser is done
@@ -90,12 +89,18 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
                 return;
             }
 
+            // Don't read from a reader when we're done
+            std.debug.assert(!self.done());
             const amt = try self._reader.readAll(&self._state.next_bytes);
             self._state.next_bytes_len = amt;
         }
 
         /// Gets the next CSV field
         pub fn next(self: *@This(), writer: Writer) Error!void {
+            self._state.field_start = false;
+            if (self.done()) {
+                return;
+            }
             self.nextImpl(writer) catch |err| {
                 self._state._erred = true;
                 return err;
@@ -104,24 +109,20 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
 
         /// Gets the next CSV field
         fn nextImpl(self: *@This(), writer: Writer) !void {
-            self._state.field_start = false;
+            std.debug.assert(!self.done());
             // lazy init our parser
             if (self._state._need_init) {
                 // Consume twice to populate our cur and next registers
                 try self.nextChunk();
                 self._state.cur_bytes_pos = 64;
                 std.debug.assert(!self._state._need_init);
-            } else if (self.done()) {
-                return;
             }
 
             self._row_end = false;
 
             const MAX_ITER = self._opts.max_iter;
             var index: usize = 0;
-            for (0..(MAX_ITER + 1)) |i| {
-                index = i;
-
+            while (index < MAX_ITER) : (index += 1) {
                 // If we have a field to print, print it
                 if (self._state.field_separators != 0) {
                     const chunk_end = @ctz(self._state.field_separators);
@@ -267,10 +268,9 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
         fn quotedRegions(m: u64) u64 {
             var x: u64 = m;
             var res: u64 = x;
-            while (x != 0) {
+            while (x != 0) : (x = x & x - 1) {
                 const x1: u64 = @bitCast(-%@as(i64, @bitCast(x)));
                 res = res ^ (x1 ^ x);
-                x = x & x - 1;
             }
             return res;
         }
@@ -608,6 +608,34 @@ test "crlfa, at 63" {
     while (!parser.done()) {
         buff.reset();
         try parser.next(buff.writer());
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "End with quote" {
+    const testing = @import("std").testing;
+    var buff = std.ArrayList(u8).init(std.testing.allocator);
+    defer buff.deinit();
+
+    var input = std.io.fixedBufferStream("\"hello, world\"");
+
+    const fieldCount = 1;
+
+    const reader = input.reader();
+    var stream = init(
+        reader,
+        @TypeOf(buff.writer()),
+        .{},
+    );
+
+    var cnt: usize = 0;
+    while (!stream.done()) {
+        try stream.next(buff.writer());
+        defer {
+            buff.clearRetainingCapacity();
+        }
         cnt += 1;
     }
 
