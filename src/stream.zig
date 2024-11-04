@@ -79,6 +79,9 @@ pub fn Parser(
 
         /// Consume a character and move forward our reader
         fn consume(self: *@This()) ReadError!void {
+            // While we should behave properly, we shouldn't be consuming
+            // when we're done
+            std.debug.assert(!self.done());
             self._cur = self._next;
 
             // This checks to see if we already hit the end of the stream
@@ -128,31 +131,40 @@ pub fn Parser(
                 return;
             }
 
+            // When we start next we always are at the start or middle of a row
             self._flags._row_end = false;
 
             // We won't technically hit an infinite loop,
             // but we practically will since this is a lot
             const MAX_ITER = self._opts.max_iter;
             var index: usize = 0;
-            for (0..(MAX_ITER + 1)) |i| {
-                index = i;
-
+            while (index < MAX_ITER) : (index += 1) {
                 if (self._flags._in_quote) {
                     // Handle quoted strings
                     if (self.current()) |cur| {
                         switch (cur) {
                             '"' => {
-                                if (self.peek() == ',' or self.peek() == '\n' or self.peek() == '\r') {
+                                if (self.peek()) |p| {
+                                    switch (p) {
+                                        ',', '\r', '\n' => {
+                                            self._flags._in_quote = false;
+                                            try self.consume();
+                                            continue;
+                                        },
+                                        '"' => {
+                                            try self.consume();
+                                            try self.consume();
+                                            try writer.writeByte('"');
+                                        },
+                                        else => {
+                                            return CsvReadError.QuotePrematurelyTerminated;
+                                        },
+                                    }
+                                } else {
                                     self._flags._in_quote = false;
                                     try self.consume();
                                     continue;
                                 }
-                                if (self.peek() != '"') {
-                                    return CsvReadError.QuotePrematurelyTerminated;
-                                }
-                                try self.consume();
-                                try self.consume();
-                                try writer.writeByte('"');
                             },
                             else => |c| {
                                 try writer.writeByte(c);
@@ -359,6 +371,36 @@ test "crlf,\" at 63" {
     );
 
     const fieldCount = 17;
+
+    const reader = input.reader();
+    var stream = init(
+        @TypeOf(reader),
+        @TypeOf(buff.writer()),
+        reader,
+        .{},
+        .{},
+    );
+
+    var cnt: usize = 0;
+    while (!stream.done()) {
+        try stream.next(buff.writer());
+        defer {
+            buff.clearRetainingCapacity();
+        }
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "End with quote" {
+    const testing = @import("std").testing;
+    var buff = std.ArrayList(u8).init(std.testing.allocator);
+    defer buff.deinit();
+
+    var input = std.io.fixedBufferStream("\"hello, world\"");
+
+    const fieldCount = 1;
 
     const reader = input.reader();
     var stream = init(

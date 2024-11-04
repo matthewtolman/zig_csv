@@ -28,9 +28,13 @@ const std = @import("std");
 /// Unquotes a quoted CSV field
 /// Assumes the field is a valid CSV field
 pub fn unquoteQuoted(data: []const u8) []const u8 {
-    if (data.len > 1 and data[0] == '"') {
+    if (data.len > 2 and data[0] == '"') {
+        // If we get here, we should be working on quoted CSV data
+        std.debug.assert(data[data.len - 1] == '"');
         return data[1..(data.len - 1)];
     } else {
+        // If we get here, we should be working on unquoted CSV data
+        std.debug.assert(std.mem.indexOf(u8, data, "\"") == null);
         return data;
     }
 }

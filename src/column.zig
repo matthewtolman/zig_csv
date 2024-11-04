@@ -277,6 +277,9 @@ pub fn Parser(comptime Reader: type) type {
         /// Returns the next row in the CSV file
         /// Heap memory is owend by the Row, so call Row.deinit()
         pub fn next(self: *@This()) ?Row {
+            if (self._done) {
+                return null;
+            }
             return self.nextImpl() catch |err| {
                 switch (err) {
                     Error.EndOfInput => {
@@ -299,16 +302,22 @@ pub fn Parser(comptime Reader: type) type {
             }
 
             if (self._buffer.done()) {
-                return null;
+                return Error.EndOfInput;
             }
+
+            std.debug.assert(!self._done);
 
             var row = Row{
                 ._fields = std.ArrayList(RowField).init(self._allocator),
                 ._bytes = std.ArrayList(u8).init(self._allocator),
             };
 
-            // Doing this defer since we don't want to access a deinitialized
-            // row when there's an error
+            // Doing this defer since so we can track our max field for
+            // fewer allocation in the future
+            // Not worried about excess memory as much since rows should be
+            // short-lived
+            // Rows that are long-lived should have a `clone()` called which
+            // will trim excess memory on copy
             defer {
                 self._row_field_count = @max(self._row_field_count, row._fields.items.len);
                 self._row_byte_count = @max(self._row_byte_count, row._bytes.items.len);
