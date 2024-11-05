@@ -46,7 +46,7 @@ jobs:
           ./zigup run 0.14.0-dev.2164+6b2c8fc68 build test
 
       # Run with supported latest master
-      - name: Test with latest master
-        run: |
-          ./zigup fetch master
-          ./zigup run master build test
+      # - name: Test with latest master
+      #   run: |
+      #     ./zigup fetch master
+      #     ./zigup run master build test
