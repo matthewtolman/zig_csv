@@ -15,14 +15,8 @@ const FSFlags = packed struct {
 /// Initializes a CSV field parser with the given reader and options.
 /// The parser will read fields one at a time from the reader, writing them
 /// to an output writer. Fields are parsed based on the configured `ParserLimitOpts`.
-pub fn init(comptime Reader: type, comptime Writer: type, reader: Reader, opts: ParserLimitOpts, flags: FSFlags) Parser(Reader, Writer) {
-    return Parser(Reader, Writer){
-        ._reader = reader,
-        ._cur = null,
-        ._next = null,
-        ._opts = opts,
-        ._flags = flags,
-    };
+pub fn init(reader: anytype, comptime Writer: type, opts: ParserLimitOpts) Parser(@TypeOf(reader), Writer) {
+    return Parser(@TypeOf(reader), Writer).init(reader, opts);
 }
 
 /// A CSV field stream will write fields to an output writer one field at a time
@@ -251,10 +245,8 @@ test "csv field streamer partial" {
     const reader = input.reader();
 
     var stream = init(
-        @TypeOf(reader),
-        @TypeOf(buff.writer()),
         reader,
-        .{},
+        @TypeOf(buff.writer()),
         .{},
     );
 
@@ -374,10 +366,8 @@ test "crlf,\" at 63" {
 
     const reader = input.reader();
     var stream = init(
-        @TypeOf(reader),
-        @TypeOf(buff.writer()),
         reader,
-        .{},
+        @TypeOf(buff.writer()),
         .{},
     );
 
@@ -404,10 +394,8 @@ test "End with quote" {
 
     const reader = input.reader();
     var stream = init(
-        @TypeOf(reader),
-        @TypeOf(buff.writer()),
         reader,
-        .{},
+        @TypeOf(buff.writer()),
         .{},
     );
 

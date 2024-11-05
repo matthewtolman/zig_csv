@@ -15,10 +15,7 @@ pub fn main() !void {
     var buff = std.io.fixedBufferStream(csv);
     const reader = buff.reader();
 
-    var parser = zcsv.stream.Parser(
-        @TypeOf(reader),
-        @TypeOf(stderr),
-    ).init(reader, .{});
+    var parser = zcsv.stream.init(reader, @TypeOf(stderr), .{});
     std.log.info("Enter CSV to parse", .{});
 
     try stderr.print("> ", .{});

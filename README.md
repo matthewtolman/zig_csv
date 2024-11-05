@@ -283,21 +283,9 @@ if (column.err) |err| {
 
 The field streamer will write each filed into a writer. It does not try to indicate the end of a row to the writer. Instead, it exposes state in the form of the `atRowEnd` method.
 
-There are two sub-approaches depending on validation. The first is partial fields (through `FieldStreamPartial`) and the next is fully-valid fields only (through `FieldStream`).
+The field streamer is primarily meant to be used inside a more complex parser. As such, its usage and interface is less user-friendly, and it can offer more detail than is necessary. When possible, use one of the other provided parsers.
 
-> Note: the Parser uses the `FieldStream` behind the scenes
-
-With the partial fields each byte is written as it is processed without buffering. This means that if there is an invalid field (e.g. `John"Doe"`), then some of the data will be written to the writer before the parse error is detected. However, this also means there is no internal buffer limiting field size or taking up stack memory. A "no infinite loop" limit is imposed of 2^32 bytes per field. This may be adjusted if desired (for whatever reason).
-
-In contrast, the fully-valid field only model will buffer fields internally and ensure they are valid before writing them to the stream. When it does write to the writer, it will write the entire field at once. This also has the advantage that writers which require memory allocations will perform fewer allocations on average.
-
-However, because `FixedStream` needs an in-memory buffer we do need to keep that buffer in the stack. The size of the buffer must be provided at compile time.
-
-Both field streamers also provide a row count with the `row` property.
-
-Field streamers are primarily meant to be used inside a more complex parser. As such, their usage and interface is less user-friendly, and they can offer more detail than is necessary. When possible, use one of the other provided parsers.
-
-Below is example usage of the partial field stream:
+Below is example usage of the field stream:
 
 ```zig
 const zcsv = @import("zcsv");
@@ -310,10 +298,7 @@ const stdin = std.io.getStdIn().reader();
 const stdout = std.io.getStdOut().writer();
 
 // no allocator needed
-var parser = zcsv.stream.FieldStreamPartial(
-    @TypeOf(stdin),
-    @TypeOf(stdout),
-).init(stdin, .{});
+var parser = zcsv.stream.init(stdin, @TypeOf(stdout), .{});
 
 std.debug.print("\nRow: ", .{});
 // The writer is passed to each call to next
@@ -332,44 +317,6 @@ while (!parser.done()) {
     }
 }
 ```
-
-Below is example usage of the full field stream. You'll notice that there is barely any difference. This is intetional since we want to be able to switch between them quickly.
-
-```zig
-const zcsv = @import("zcsv");
-const std = @import("std");
-
-/// ...
-
-// Get reader and writer
-const stdin = std.io.getStdIn().reader();
-const stdout = std.io.getStdOut().writer();
-
-var parser = zcsv.stream.FieldStream(
-    @TypeOf(stdin),
-    @TypeOf(stdout),
-    1_024, // Internal buffer size
-).init(stdin); // No second parameter here
-
-std.debug.print("\nRow: ", .{});
-// The writer is passed to each call to next
-// This allows us to use a different writer per field
-//
-// next does throw if it has an error.
-// next will return `false` when it hits the end of the input
-while (!parser.done()) {
-    try parser.next(stdout);
-    // Do whatever you need to here for the field
-
-    // This is how you can tell if you're about to move to the next row
-    // Note that we aren't at the next row, just that we're about to move
-    if (column.atRowEnd()) {
-        std.debug.print("\nRow: ", .{});
-    }
-}
-```
-
-This parser operates at a reasonable speed, able to parse around 12MB in 150ms on my 2019 MacBook Pro. This parser forms the basis of all the allocating parsers. I don't use any of the faster parsers since the volume of memory allocations done by the column and map parsers outweighs the performance benefits in my testing, and the other parsers are ether more inflexible (e.g. raw parser) or way harder to verify correctness (e.g. fast streaming).
 
 ### Raw Parser (zero-allocation)
 
