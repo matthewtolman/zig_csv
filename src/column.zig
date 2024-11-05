@@ -1,12 +1,8 @@
 const std = @import("std");
 const CsvReadError = @import("common.zig").CsvReadError;
 const ParserLimitOpts = @import("common.zig").ParserLimitOpts;
-
-// the volume of memory allocations we do overshadows any performance gains from
-// stream_fast by a vast margin
-// Using stream since it is better tested, simpler, and easier to verify that it
-// is indeed correct
-const stream = @import("stream.zig");
+const decoder = @import("decode_writer.zig");
+const streamFast = @import("stream_fast.zig");
 
 /// Internal representation of a field in a row
 const RowField = struct {
@@ -246,8 +242,9 @@ pub const ParserOpts = struct {
 /// Will parse the reader line-by-line instead of all at once
 /// Memory is owned by returned rows, so call Row.deinit()
 pub fn Parser(comptime Reader: type) type {
-    const Writer = std.ArrayList(u8).Writer;
-    const Fs = stream.Parser(Reader, Writer);
+    const UnderlyingWriter = std.ArrayList(u8).Writer;
+    const Writer = decoder.DecodeWriter(UnderlyingWriter).Writer;
+    const Fs = streamFast.Parser(Reader, Writer);
     return struct {
         pub const Error = Fs.Error || std.mem.Allocator.Error || error{
             EndOfInput,
@@ -328,15 +325,17 @@ pub fn Parser(comptime Reader: type) type {
 
             try row._fields.ensureTotalCapacity(self._row_field_count);
             try row._bytes.ensureTotalCapacity(self._row_byte_count);
+            var rowWriter = decoder.init(row._bytes.writer());
 
             var at_row_end = false;
 
             // We're only getting the next row, so only iterate over fields
             // until we reach the end of the row
             while (!at_row_end) {
+                defer rowWriter.fieldEnd();
                 const start = row._bytes.items.len;
 
-                try self._buffer.next(row._bytes.writer());
+                try self._buffer.next(rowWriter.writer());
 
                 const field = RowField{
                     ._pos = start,
