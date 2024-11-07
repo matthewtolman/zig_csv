@@ -207,7 +207,6 @@ pub const Parser = struct {
 
             const at_end = self.startPos() + chunk_size >= self._text.len;
 
-            // TODO: ADAPT
             if (at_end) {
                 const last_bit_quoted = (quoted >> @truncate(chunk_size - 1)) & 1;
                 const last_quote_end = (quote_ends >> @truncate(chunk_size - 1)) & 1;
