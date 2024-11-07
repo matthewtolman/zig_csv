@@ -1,7 +1,6 @@
 const std = @import("std");
 const CsvReadError = @import("common.zig").CsvReadError;
 const ParserLimitOpts = @import("common.zig").ParserLimitOpts;
-const decoder = @import("decode_writer.zig");
 const streamFast = @import("stream_fast.zig");
 
 /// Internal representation of a field in a row
@@ -242,8 +241,7 @@ pub const ParserOpts = struct {
 /// Will parse the reader line-by-line instead of all at once
 /// Memory is owned by returned rows, so call Row.deinit()
 pub fn Parser(comptime Reader: type) type {
-    const UnderlyingWriter = std.ArrayList(u8).Writer;
-    const Writer = decoder.DecodeWriter(UnderlyingWriter).Writer;
+    const Writer = std.ArrayList(u8).Writer;
     const Fs = streamFast.Parser(Reader, Writer);
     return struct {
         pub const Error = Fs.Error || std.mem.Allocator.Error || error{
@@ -325,17 +323,16 @@ pub fn Parser(comptime Reader: type) type {
 
             try row._fields.ensureTotalCapacity(self._row_field_count);
             try row._bytes.ensureTotalCapacity(self._row_byte_count);
-            var rowWriter = decoder.init(row._bytes.writer());
+            const row_writer = row._bytes.writer();
 
             var at_row_end = false;
 
             // We're only getting the next row, so only iterate over fields
             // until we reach the end of the row
             while (!at_row_end) {
-                defer rowWriter.fieldEnd();
                 const start = row._bytes.items.len;
 
-                try self._buffer.next(rowWriter.writer());
+                try self._buffer.next(row_writer);
 
                 const field = RowField{
                     ._pos = start,
@@ -589,4 +586,5 @@ test "csv parse into value" {
 
         try std.testing.expectEqualDeep(expected[ei - 1], user);
     }
+    try std.testing.expectEqual(expected.len + 1, ei);
 }

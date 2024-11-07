@@ -1,27 +1,169 @@
 const CsvReadError = @import("common.zig").CsvReadError;
 const ParseBoolError = @import("common.zig").ParseBoolError;
 const common = @import("common.zig");
+const decode = @import("decode_writer.zig");
 const std = @import("std");
 
 // DO NOT CHANGE
 const chunk_size = 64;
+const ChunkMask = u64;
 const quotes: @Vector(chunk_size, u8) = @splat(@as(u8, '"'));
 
+const ChunkWriteRes = enum { FINISHED_FIELD, PARTIAL_FIELD, WROTE_NOTHING };
+const ChunkFieldCover = enum(u8) { COMPLETE, INCOMPLETE, INVALID };
+
+/// Creates match bit string
+fn match(ch: u8, slice: []const u8) u64 {
+    var res: u64 = 0;
+    for (slice, 0..) |c, i| {
+        res |= @as(u64, @intFromBool(c == ch)) << @truncate(i);
+    }
+    return res;
+}
+
+/// Calculates quoted region mask
+fn quotedRegions(m: u64) u64 {
+    var x: u64 = m;
+    var res: u64 = x;
+    while (x != 0) : (x = x & x - 1) {
+        const x1: u64 = @bitCast(-%@as(i64, @bitCast(x)));
+        res = res ^ (x1 ^ x);
+    }
+    return res;
+}
+
+const Chunk = struct {
+    quoted: ChunkMask = 0,
+    quotes: ChunkMask = 0,
+    crs: ChunkMask = 0,
+    next_delim_track: ChunkMask = 0,
+    delims: ChunkMask = 0,
+    bytes: [chunk_size]u8 = undefined,
+    field_cover: ChunkFieldCover = .INCOMPLETE,
+    len: u8 = 0,
+    offset: u8 = 0,
+    end_seps_passed: bool = false,
+
+    pub fn clear(self: *@This()) void {
+        self.quoted = 0;
+        self.quotes = 0;
+        self.crs = 0;
+        self.next_delim_track = 0;
+        self.delims = 0;
+        self.len = 0;
+        self.offset = 0;
+        self.field_cover = .INVALID;
+    }
+
+    fn populate(self: *@This(), prev: *const Chunk) CsvReadError!ChunkFieldCover {
+        const chunk = self.bytes[0..self.len];
+
+        self.quotes = match('"', chunk);
+        const commas = match(',', chunk);
+        self.crs = match('\r', chunk);
+        var lfs = match('\n', chunk);
+
+        // Add a "terminator" chunk
+        if (chunk.len < chunk_size) {
+            lfs |= @as(u64, 1) << @truncate(chunk.len);
+        }
+
+        const carry: u64 = @bitCast(-%@as(
+            i64,
+            @bitCast(prev.quoted >> (chunk_size - 1)),
+        ));
+        self.quoted = quotedRegions(self.quotes) ^ carry;
+
+        const unquoted = ~self.quoted;
+
+        const delim_commas = commas & unquoted;
+        const delim_crs = self.crs & unquoted;
+        const delim_lfs = lfs & unquoted;
+        self.next_delim_track = delim_commas | delim_crs | delim_lfs;
+        self.delims = self.next_delim_track;
+
+        const expected_lfs = (delim_crs << 1) | (prev.crs >> (chunk_size - 1));
+        const mcheck_lfs = expected_lfs & delim_lfs;
+
+        if (@popCount(expected_lfs) != @popCount(mcheck_lfs)) {
+            return CsvReadError.InvalidLineEnding;
+        }
+
+        defer {
+            // if we ended on a CR previously, make sure to clear it from the
+            // field separators, otherwise we end up getting a bad start position
+            // We don't remove it from field_seps since we need it for line
+            // ending validation
+            if (prev.crs & (1 << (chunk_size - 1)) != 0) {
+                self.clearNextDelim();
+            }
+        }
+
+        const expected_start_seps = (self.stringStarts() & ~(prev.stringEnds() >> (chunk_size - 1)));
+        const expected_end_seps = ((self.stringEnds() << 1) | (prev.stringEnds() >> (chunk_size - 1))) & (~self.stringStarts());
+        const delim_seps_start = (self.delims << 1) | (prev.delims >> (chunk_size - 1));
+
+        const mcheck_delim_end = self.delims & expected_end_seps;
+        const mcheck_delim_start = delim_seps_start & expected_start_seps;
+
+        self.end_seps_passed = @popCount(expected_end_seps) == @popCount(mcheck_delim_end);
+        const start_seps_passed = @popCount(expected_start_seps) == @popCount(mcheck_delim_start);
+
+        if (!start_seps_passed) {
+            return CsvReadError.UnexpectedQuote;
+        }
+
+        return .INCOMPLETE;
+    }
+
+    pub fn readFrom(self: *@This(), reader: anytype, prev: *const Chunk) !void {
+        self.offset = 0;
+        self.len = @truncate(try reader.readAll(&self.bytes));
+        self.field_cover = try self.populate(prev);
+    }
+
+    fn strings(self: *const @This()) u64 {
+        return self.quotes | self.quoted;
+    }
+
+    fn stringStarts(self: *const @This()) u64 {
+        const str = self.strings();
+        return str & ~(str << 1);
+    }
+
+    fn stringEnds(self: *const @This()) u64 {
+        const str = self.strings();
+        return str & ~(str >> 1);
+    }
+
+    fn nextDelim(self: *const @This()) u8 {
+        return @intCast(@ctz(self.next_delim_track));
+    }
+
+    fn clearNextDelim(self: *@This()) void {
+        self.next_delim_track = self.next_delim_track & ~(@as(u64, 1) << @truncate(self.nextDelim()));
+    }
+
+    fn atEnd(self: *const @This()) bool {
+        return self.len < chunk_size;
+    }
+
+    fn consumed(self: *const @This()) bool {
+        return self.offset >= self.len;
+    }
+};
+
 const ParserState = struct {
-    prev_quote: u64 = 0,
-    prev_cr: u64 = 0,
-    prev_quote_ends: u64 = 0,
-    prev_field_seps: u64 = 1 << (chunk_size - 1),
+    prev_chunk: Chunk = .{},
+    cur_chunk: Chunk = .{},
+    next_chunk: Chunk = .{},
+
     field_separators: u64 = 0,
-    next_bytes: [64]u8 = undefined,
-    next_bytes_len: usize = 0,
-    cur_bytes: [64]u8 = undefined,
-    cur_bytes_len: usize = 0,
-    cur_bytes_pos: u32 = 0,
-    field_start: bool = true,
+
     at_end: bool = false,
-    _need_init: bool = true,
-    _erred: bool = false,
+    need_init: bool = true,
+    erred: bool = false,
+    field_start: bool = true,
 };
 
 /// Fast fields parser
@@ -50,229 +192,191 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
 
         /// Returns if a parser is done
         pub fn done(self: *const @This()) bool {
-            if (self._state._erred) {
+            if (self._state.erred) {
                 return true;
-            }
-            if (self._state._need_init) {
-                return false;
             }
             if (self._state.field_start) {
                 return false;
             }
-            if (self._state.cur_bytes_len == 0) {
-                return true;
+            if (self._state.need_init) {
+                return false;
             }
-            if (self._state.cur_bytes_pos >= self._state.cur_bytes_len and self._state.next_bytes_len == 0) {
-                return true;
+            if (self._state.cur_chunk.consumed()) {
+                if (self._state.cur_chunk.atEnd()) {
+                    return true;
+                }
+                if (self._state.next_chunk.len == 0) {
+                    return true;
+                }
             }
             return false;
         }
 
-        /// reates match bit string
-        fn match(ch: u8, slice: []const u8) u64 {
-            var res: u64 = 0;
-            for (slice, 0..) |c, i| {
-                res |= @as(u64, @intFromBool(c == ch)) << @truncate(i);
-            }
-            return res;
-        }
+        fn nextChunk(self: *@This()) Error!void {
+            std.debug.assert(self._state.prev_chunk.len <= chunk_size);
+            std.debug.assert(self._state.cur_chunk.len <= chunk_size);
+            std.debug.assert(self._state.next_chunk.len <= chunk_size);
 
-        fn nextChunk(self: *@This()) !void {
-            defer self._state._need_init = false;
-            self._state.cur_bytes_len = self._state.next_bytes_len;
-            self._state.cur_bytes_pos = 0;
-            std.debug.assert(self._state.cur_bytes_len <= chunk_size);
-            std.mem.copyForwards(u8, &self._state.cur_bytes, &self._state.next_bytes);
+            defer self._state.need_init = false;
+            const at_end = self._state.next_chunk.atEnd();
 
-            if (!self._state._need_init and self._state.next_bytes_len < 64) {
-                self._state.next_bytes_len = 0;
+            const tmp = self._state.prev_chunk;
+            self._state.prev_chunk = self._state.cur_chunk;
+            self._state.cur_chunk = self._state.next_chunk;
+            self._state.next_chunk = tmp;
+
+            if (!self._state.need_init and at_end) {
+                self._state.next_chunk.clear();
                 return;
             }
 
             // Don't read from a reader when we're done
             std.debug.assert(!self.done());
-            const amt = try self._reader.readAll(&self._state.next_bytes);
-            self._state.next_bytes_len = amt;
+            try self._state.next_chunk.readFrom(self._reader, &self._state.cur_chunk);
         }
 
         /// Gets the next CSV field
         pub fn next(self: *@This(), writer: Writer) Error!void {
-            self._state.field_start = false;
             if (self.done()) {
                 return;
             }
-            self.nextImpl(writer) catch |err| {
-                self._state._erred = true;
+            var d = decode.init(writer);
+            self.nextImpl(d.writer()) catch |err| {
+                self._state.erred = true;
                 return err;
             };
         }
 
         /// Gets the next CSV field
-        fn nextImpl(self: *@This(), writer: Writer) !void {
+        fn nextImpl(self: *@This(), writer: anytype) Error!void {
             std.debug.assert(!self.done());
             // lazy init our parser
-            if (self._state._need_init) {
-                // Consume twice to populate our cur and next registers
+            if (self._state.need_init) {
+                self._state.next_chunk.delims = @as(ChunkMask, 1 << @truncate(chunk_size - 1));
+                self._state.next_chunk.next_delim_track = @as(ChunkMask, 1 << @truncate(chunk_size - 1));
                 try self.nextChunk();
-                self._state.cur_bytes_pos = 64;
-                std.debug.assert(!self._state._need_init);
+                try self.nextChunk();
+                std.debug.assert(!self._state.need_init);
+                _ = try self.validateChunk();
             }
 
+            self._state.field_start = false;
             self._row_end = false;
 
             const MAX_ITER = self._opts.max_iter;
             var index: usize = 0;
             while (index < MAX_ITER) : (index += 1) {
-                // If we have a field to print, print it
-                if (self._state.field_separators != 0) {
-                    const chunk_end = @ctz(self._state.field_separators);
-                    std.debug.assert(chunk_end <= self._state.cur_bytes_len);
-                    std.debug.assert(self._state.cur_bytes_pos < chunk_size);
-                    std.debug.assert(chunk_end <= chunk_size);
-
-                    const end_pos = @min(self._state.cur_bytes_len, chunk_end);
-                    const out = self._state.cur_bytes[self._state.cur_bytes_pos..chunk_end];
-                    std.debug.assert(out.len <= chunk_size);
-                    try writer.writeAll(out);
-
-                    self._row_end = self._state.cur_bytes[end_pos] == '\r' or self._state.cur_bytes[end_pos] == '\n';
-
-                    self._state.field_separators ^= @as(u64, 1) << @truncate(chunk_end);
-                    self._state.cur_bytes_pos = chunk_end + 1;
-
-                    if (end_pos < self._state.cur_bytes_len and self._state.cur_bytes[end_pos] == '\r') {
-                        if (chunk_end + 1 < chunk_size - 1) {
-                            self._state.field_separators ^= @as(u64, 1) << @truncate(chunk_end + 1);
-                            self._state.cur_bytes_pos = chunk_end + 2;
-                        } else {
-                            // Handle the edge case we end a chunk on a CR
-                            // In this case, we need to go through the loop again to
-                            // hit the LF
-                            // Additionally, we need to not output an empty field on the LF
-                            self._state.field_separators = 0;
-                        }
-                    }
-
-                    if (end_pos < self._state.cur_bytes_len and self._state.cur_bytes[end_pos] == ',') {
-                        self._state.field_start = true;
-                    }
-                    return;
+                const write_state = try self.writeChunk(writer);
+                switch (write_state) {
+                    .FINISHED_FIELD => return,
+                    else => {},
                 }
-                self._state.field_start = false;
 
-                // print the remainder of our current chunk
-                if (self._state.cur_bytes_pos < self._state.cur_bytes_len) {
-                    const out = self._state.cur_bytes[self._state.cur_bytes_pos..];
-                    std.debug.assert(out.len <= chunk_size);
-                    try writer.writeAll(out);
-                }
-                self._state.cur_bytes_pos = 0;
-
-                // grab our next chunk
                 try self.nextChunk();
-
-                if (self._state.cur_bytes_len == 0) {
-                    return;
-                }
-
-                const chunk = self._state.cur_bytes[0..self._state.cur_bytes_len];
-                std.debug.assert(chunk.len <= chunk_size);
-
-                const match_quotes = match('"', chunk);
-                const match_commas = match(',', chunk);
-                const match_crs = match('\r', chunk);
-                var match_lfs = match('\n', chunk);
-
-                defer self._state.prev_cr = match_crs;
-
-                if (self._state.cur_bytes_len < chunk_size) {
-                    match_lfs |= @as(u64, 1) << @truncate(self._state.cur_bytes_len);
-                }
-
-                const carry: u64 = @bitCast(-%@as(
-                    i64,
-                    @bitCast(self._state.prev_quote >> (chunk_size - 1)),
-                ));
-                const quoted = @This().quotedRegions(match_quotes) ^ carry;
-                defer self._state.prev_quote = quoted;
-
-                const unquoted = ~quoted;
-
-                const field_commas = match_commas & unquoted;
-                const field_crs = match_crs & unquoted;
-                const field_lfs = match_lfs & unquoted;
-
-                const expected_lfs = (match_crs << 1) | (self._state.prev_cr >> (chunk_size - 1));
-                const masked_lfs = expected_lfs & field_lfs;
-
-                if (@popCount(expected_lfs) != @popCount(masked_lfs)) {
-                    return CsvReadError.InvalidLineEnding;
-                }
-
-                const field_seps = field_commas | field_crs | field_lfs;
-                self._state.field_separators = field_seps;
-                defer {
-                    // if we ended on a CR previously, make sure to clear it from the
-                    // field separators, otherwise we end up getting a bad start position
-                    // We don't remove it from field_seps since we need it for line
-                    // ending validation
-                    if (self._state.prev_cr & (1 << (chunk_size - 1)) != 0) {
-                        self._state.field_separators &= ~@as(u64, 1);
-                    }
-                    self._state.prev_field_seps = field_seps;
-                }
-
-                const quote_strings = match_quotes | quoted;
-
-                const quote_starts = quote_strings & ~(quote_strings << 1);
-                const quote_ends = quote_strings & ~(quote_strings >> 1);
-                const expected_starts = quote_starts & ~(self._state.prev_quote_ends >> (chunk_size - 1));
-                defer self._state.prev_quote_ends = quote_ends;
-
-                const at_end = self._state.next_bytes_len == 0;
-                if (at_end) {
-                    const last_bit_quoted = (quoted >> @truncate(chunk_size - 1)) & 1;
-                    const last_quote_end = (quote_ends >> @truncate(chunk_size - 1)) & 1;
-                    if (last_bit_quoted == 1 and last_quote_end != 0) {
-                        return CsvReadError.UnexpectedEndOfFile;
-                    }
-
-                    if (self._state.cur_bytes[self._state.cur_bytes_len - 1] == '\r') {
-                        return CsvReadError.InvalidLineEnding;
-                    }
-
-                    if (self._state.cur_bytes[self._state.cur_bytes_len - 1] == ',') {
-                        self._state.field_start = true;
-                    }
-                }
-
-                const expected_end_seps = ((quote_ends << 1) | (self._state.prev_quote_ends >> (chunk_size - 1))) & (~quote_starts);
-                const field_seps_start = (self._state.field_separators << 1) | (self._state.prev_field_seps >> (chunk_size - 1));
-
-                const masked_end_seps = self._state.field_separators & expected_end_seps;
-                const masked_sep_start = field_seps_start & expected_starts;
-
-                if (!at_end and @popCount(expected_end_seps) != @popCount(masked_end_seps)) {
-                    return CsvReadError.QuotePrematurelyTerminated;
-                }
-
-                if (@popCount(masked_sep_start) != @popCount(expected_starts)) {
-                    return CsvReadError.UnexpectedQuote;
-                }
+                _ = try self.validateChunk();
             }
 
             return CsvReadError.InternalLimitReached;
         }
 
-        /// Calculates quoted region mask
-        fn quotedRegions(m: u64) u64 {
-            var x: u64 = m;
-            var res: u64 = x;
-            while (x != 0) : (x = x & x - 1) {
-                const x1: u64 = @bitCast(-%@as(i64, @bitCast(x)));
-                res = res ^ (x1 ^ x);
+        fn writeChunk(self: *@This(), writer: anytype) Error!ChunkWriteRes {
+            std.debug.assert(self._state.cur_chunk.len <= chunk_size);
+            if (self._state.cur_chunk.len == 0) {
+                return .FINISHED_FIELD;
             }
-            return res;
+
+            if (self._state.cur_chunk.consumed()) {
+                return .WROTE_NOTHING;
+            }
+
+            var offset = self._state.cur_chunk.offset;
+            if (offset == 0) {
+                if (self._state.prev_chunk.len > 0) {
+                    if (self._state.prev_chunk.bytes[self._state.prev_chunk.len - 1] == '\r') {
+                        if (self._state.cur_chunk.bytes[offset] == '\n') {
+                            offset = 1;
+                        }
+                    }
+                }
+            }
+            std.debug.assert(offset <= chunk_size);
+            std.debug.assert(offset < self._state.cur_chunk.len);
+
+            if (self._state.cur_chunk.next_delim_track == 0) {
+                const field = self._state.cur_chunk.bytes[offset..self._state.cur_chunk.len];
+                if (field[field.len - 1] == ',') {
+                    self._state.field_start = true;
+                }
+                try writer.writeAll(field);
+                self._state.cur_chunk.offset = chunk_size + 1;
+                return .PARTIAL_FIELD;
+            }
+
+            const out_delim = self._state.cur_chunk.nextDelim();
+            std.debug.assert(out_delim <= chunk_size);
+
+            const end_index = @min(out_delim, self._state.cur_chunk.len - 1);
+            std.debug.assert(end_index < chunk_size);
+            std.debug.assert(end_index < self._state.cur_chunk.len);
+
+            const field = self._state.cur_chunk.bytes[offset..out_delim];
+            var row_end = false;
+
+            if (self._state.cur_chunk.atEnd() or self._state.next_chunk.len == 0) {
+                if (out_delim >= self._state.cur_chunk.len) {
+                    row_end = true;
+                }
+            }
+            if (self._state.cur_chunk.bytes[end_index] == '\r') {
+                row_end = true;
+            } else if (self._state.cur_chunk.bytes[end_index] == '\n') {
+                row_end = true;
+            }
+
+            if (self._state.cur_chunk.bytes[end_index] == ',') {
+                self._state.field_start = true;
+                row_end = false;
+            }
+
+            try writer.writeAll(field);
+
+            self._state.cur_chunk.offset = out_delim + 1;
+            self._state.cur_chunk.clearNextDelim();
+
+            if (self._state.cur_chunk.bytes[end_index] == '\r') {
+                self._state.cur_chunk.offset = out_delim + 2;
+                self._state.cur_chunk.clearNextDelim();
+                row_end = true;
+            }
+            self._row_end = row_end;
+            return .FINISHED_FIELD;
+        }
+
+        fn validateChunk(self: *@This()) CsvReadError!ChunkFieldCover {
+            if (self._state.cur_chunk.atEnd() or self._state.next_chunk.len == 0) {
+                const last_bit_quoted = (self._state.cur_chunk.quoted >> @truncate(chunk_size - 1)) & 1;
+                const last_quote_end = (self._state.cur_chunk.stringEnds() >> @truncate(chunk_size - 1)) & 1;
+                if (last_bit_quoted == 1 and last_quote_end != 0) {
+                    return CsvReadError.UnexpectedEndOfFile;
+                }
+
+                if (self._state.cur_chunk.len > 0) {
+                    if (self._state.cur_chunk.bytes[self._state.cur_chunk.len - 1] == '\r') {
+                        return CsvReadError.InvalidLineEnding;
+                    }
+                } else if (self._state.prev_chunk.len > 0) {
+                    if (self._state.prev_chunk.bytes[self._state.prev_chunk.len - 1] == '\r') {
+                        return CsvReadError.InvalidLineEnding;
+                    }
+                }
+            } else if (!self._state.cur_chunk.end_seps_passed) {
+                return CsvReadError.QuotePrematurelyTerminated;
+            }
+
+            if (self._state.cur_chunk.next_delim_track != 0) {
+                return .COMPLETE;
+            }
+            return .INCOMPLETE;
         }
     };
 }
@@ -288,8 +392,8 @@ test "simd array" {
         \\c1,c2,c3,c4,c5
         \\r1,"ff1,ff2",,ff3,ff4
         \\r2," "," "," "," "
-        \\r3,1  ,2  ,3  ,4  
-        \\r4,   ,   ,   ,   
+        \\r3,1  ,2  ,3  ,4
+        \\r4,   ,   ,   ,
         \\r5,abc,def,geh,""""
         \\r6,""""," "" ",hello,"b b b"
     );
@@ -302,8 +406,8 @@ test "simd array" {
         "c1", "c2",      "c3",   "c4",    "c5",
         "r1", "ff1,ff2", "",     "ff3",   "ff4",
         "r2", " ",       " ",    " ",     " ",
-        "r3", "1  ",     "2  ",  "3  ",   "4  ",
-        "r4", "   ",     "   ",  "   ",   "   ",
+        "r3", "1  ",     "2  ",  "3  ",   "4",
+        "r4", "   ",     "   ",  "   ",   "",
         "r5", "abc",     "def",  "geh",   "\"",
         "r6", "\"",      " \" ", "hello", "b b b",
     };
@@ -406,21 +510,16 @@ test "slice streamer" {
     };
 
     var ei: usize = 0;
-    var decode_buff: [64]u8 = undefined;
-    var decode_stream = std.io.fixedBufferStream(&decode_buff);
     var parser = init(input.reader(), @TypeOf(buff.writer()), .{});
 
     while (!parser.done()) {
         defer {
             buff.clearRetainingCapacity();
-            decode_stream.reset();
             ei += 1;
         }
         try parser.next(buff.writer());
-        try common.decode(buff.items, decode_stream.writer());
         const atEnd = ei % 5 == 4;
-        const field = decode_stream.getWritten();
-        try std.testing.expectEqualStrings(expected[ei], field);
+        try std.testing.expectEqualStrings(expected[ei], buff.items);
         try std.testing.expectEqual(atEnd, parser.atRowEnd());
     }
 
@@ -472,7 +571,7 @@ test "slice iterator" {
             \\"def"geh",
             ,
             .count = 0,
-            .err = CsvReadError.UnexpectedEndOfFile,
+            .err = CsvReadError.UnexpectedQuote,
         },
         .{
             .input =
@@ -507,7 +606,11 @@ test "slice iterator" {
         while (!iterator.done()) {
             buff.reset();
             iterator.next(buff.writer()) catch |err| {
-                try testing.expectEqual(testCase.err.?, err);
+                if (testCase.err == null) {
+                    try testing.expectFmt("", "Unexpected error: {}", .{err});
+                } else {
+                    try testing.expectEqual(testCase.err.?, err);
+                }
                 continue;
             };
 
@@ -553,7 +656,7 @@ test "crlf, at 63" {
 
     const fieldCount = 17;
 
-    var b: [100]u8 = undefined;
+    var b: [150]u8 = undefined;
     var buff = std.io.fixedBufferStream(&b);
     var parser = init(input.reader(), @TypeOf(buff.writer()), .{});
     var cnt: usize = 0;
@@ -567,8 +670,6 @@ test "crlf, at 63" {
 }
 
 test "crlf\", at 63" {
-    const testing = @import("std").testing;
-
     var input = std.io.fixedBufferStream(
         ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
             "\"\",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
@@ -585,9 +686,10 @@ test "crlf\", at 63" {
         buff.reset();
         try parser.next(buff.writer());
         cnt += 1;
+        try std.testing.expectEqual(null, std.mem.indexOf(u8, buff.getWritten(), "\n"));
     }
 
-    try testing.expectEqual(fieldCount, cnt);
+    try std.testing.expectEqual(fieldCount, cnt);
 }
 
 test "crlfa, at 63" {
