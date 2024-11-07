@@ -184,3 +184,64 @@ test "csv parse into map sk" {
         try std.testing.expectEqualDeep(expected[ei], user);
     }
 }
+
+test "csv parse into map ck larger" {
+    const User = struct {
+        id: i64,
+        name: ?[]const u8,
+        age: ?u32,
+        active: bool,
+    };
+
+    const growth = 125;
+
+    const buffer =
+        \\userid,name,age,active
+        \\1,"John ""Johnny"" Doe",32,yes
+        \\2,"Smith, Jack",53,no
+        \\3,Peter,18,yes
+        \\4,,,no
+    ++ ("\r\n15,\"Jackary \"\"Smith\"\" Action Man Totally Real Name Don't worry about how long this is I'm just typing my totally legit name that's not meant to find overflow or weird boundary issues....\",10,yes" ** growth);
+
+    var input = std.io.fixedBufferStream(buffer);
+    var parser = try init(std.testing.allocator, input.reader(), .{});
+    defer parser.deinit();
+
+    const expected = [_]User{
+        User{
+            .id = 1,
+            .name = "John \"Johnny\" Doe",
+            .age = 32,
+            .active = true,
+        },
+        User{ .id = 2, .name = "Smith, Jack", .age = 53, .active = false },
+        User{ .id = 3, .name = "Peter", .age = 18, .active = true },
+        User{ .id = 4, .name = null, .age = null, .active = false },
+    } ++ ([_]User{
+        User{
+            .id = 15,
+            .name = "Jackary \"Smith\" Action Man Totally Real Name Don't worry about how long this is I'm just typing my totally legit name that's not meant to find overflow or weird boundary issues....",
+            .age = 10,
+            .active = true,
+        },
+    } ** growth);
+
+    var ei: usize = 0;
+    while (parser.next()) |row| {
+        defer {
+            row.deinit();
+            ei += 1;
+        }
+
+        const user = User{
+            .id = try (row.data().get("userid").?.asInt(i64, 10)) orelse 0,
+            .name = row.data().get("name").?.asSlice(),
+            .age = try (row.data().get("age").?.asInt(u32, 10)),
+            .active = try (row.data().get("active").?.asBool()) orelse false,
+        };
+
+        try std.testing.expectEqualDeep(expected[ei], user);
+    }
+
+    try std.testing.expectEqual(expected.len, ei);
+}

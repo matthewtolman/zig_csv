@@ -108,4 +108,19 @@ test "with fixed buffer" {
     try decoder.writer().writeAll("hi");
     try std.testing.expectEqualStrings("hello \"world\"hellohi", fbs.getWritten());
     decoder.fieldEnd();
+
+    fbs.reset();
+    try decoder.writer().writeAll("\"\"");
+    try std.testing.expectEqualStrings("", fbs.getWritten());
+    decoder.fieldEnd();
+
+    try decoder.writer().writeAll("");
+    try std.testing.expectEqualStrings("", fbs.getWritten());
+    decoder.fieldEnd();
+
+    fbs.reset();
+    try decoder.writer().writeAll("012345678901234567890123456789");
+    try decoder.writer().writeAll("012345678901234567890123456789");
+    try std.testing.expectEqualStrings("012345678901234567890123456789012345678901234567890123456789", fbs.getWritten());
+    decoder.fieldEnd();
 }

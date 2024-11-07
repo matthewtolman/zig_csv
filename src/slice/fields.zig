@@ -206,6 +206,8 @@ pub const Parser = struct {
             defer self._state.prev_quote_ends = quote_ends;
 
             const at_end = self.startPos() + chunk_size >= self._text.len;
+
+            // TODO: ADAPT
             if (at_end) {
                 const last_bit_quoted = (quoted >> @truncate(chunk_size - 1)) & 1;
                 const last_quote_end = (quote_ends >> @truncate(chunk_size - 1)) & 1;
@@ -556,9 +558,13 @@ test "crlf, at 63" {
     const fieldCount = 17;
 
     var parser = Parser.init(input, .{});
+    var b: [100]u8 = undefined;
+    var buff = std.io.fixedBufferStream(&b);
     var cnt: usize = 0;
     while (parser.next()) |_| {
+        buff.reset();
         cnt += 1;
+        try testing.expectEqual(null, std.mem.indexOf(u8, buff.getWritten(), "\n"));
     }
 
     try testing.expectEqual(fieldCount, cnt);
