@@ -1,4 +1,5 @@
 const std = @import("std");
+const common = @import("common.zig");
 
 /// Decodes CSV values and writes the decoded values to an underlying stream
 /// Operates on a stream basis to avoid internal buffering
@@ -16,6 +17,7 @@ pub fn DecodeWriter(comptime UnderlyingWriter: type) type {
         _start: bool = true,
         _last_was_quote: bool = false,
         _quoted: bool = false,
+        _opts: common.CsvOpts = .{},
 
         /// Marks the end of a field so it can reset internal state
         pub fn fieldEnd(self: *DecodeWriter(UnderlyingWriter)) void {
@@ -38,7 +40,8 @@ pub fn DecodeWriter(comptime UnderlyingWriter: type) type {
             self: *DecodeWriter(UnderlyingWriter),
             data: []const u8,
         ) AppendErr!usize {
-            if (self._start and data.len > 0 and data[0] == '"') {
+            const quote = self._opts.column_quote;
+            if (self._start and data.len > 0 and data[0] == quote) {
                 self._quoted = true;
             }
 
@@ -47,7 +50,7 @@ pub fn DecodeWriter(comptime UnderlyingWriter: type) type {
             if (self._quoted) {
                 for (data) |datum| {
                     defer self._start = false;
-                    if (datum == '"') {
+                    if (datum == quote) {
                         // Make sure we started with a quote
                         std.debug.assert(self._quoted);
                         if (self._start) {
@@ -63,13 +66,14 @@ pub fn DecodeWriter(comptime UnderlyingWriter: type) type {
                     }
 
                     std.debug.assert(!self._last_was_quote);
-                    std.debug.assert(!self._start or datum != '"');
+                    std.debug.assert(!self._start or datum != quote);
                     try self._writer.writeByte(datum);
                 }
             } else {
                 // If we aren't a quoted string, we can take a shortcut
                 // But let's also check that the shortcut is valid
-                std.debug.assert(std.mem.indexOf(u8, data, "\"") == null);
+                const quoted = [_]u8{self._opts.column_quote};
+                std.debug.assert(std.mem.indexOf(u8, data, quoted[0..]) == null);
                 try self._writer.writeAll(data);
             }
 
@@ -81,22 +85,22 @@ pub fn DecodeWriter(comptime UnderlyingWriter: type) type {
             return .{ .context = self };
         }
 
-        pub fn init(underlying: UnderlyingWriter) DecodeWriter(UnderlyingWriter) {
-            return .{ ._writer = underlying };
+        pub fn init(underlying: UnderlyingWriter, opts: common.CsvOpts) DecodeWriter(UnderlyingWriter) {
+            return .{ ._writer = underlying, ._opts = opts };
         }
     };
 }
 
 /// Creates a new CSV decode writer
-pub fn init(writer: anytype) DecodeWriter(@TypeOf(writer)) {
-    return DecodeWriter(@TypeOf(writer)).init(writer);
+pub fn init(writer: anytype, opts: common.CsvOpts) DecodeWriter(@TypeOf(writer)) {
+    return DecodeWriter(@TypeOf(writer)).init(writer, opts);
 }
 
 test "with fixed buffer" {
     var buff: [100]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buff);
 
-    var decoder = init(fbs.writer());
+    var decoder = init(fbs.writer(), .{});
     try decoder.writer().writeAll("\"hello \"\"world\"\"\"");
     try std.testing.expectEqualStrings("hello \"world\"", fbs.getWritten());
     decoder.fieldEnd();

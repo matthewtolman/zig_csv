@@ -2,7 +2,7 @@ const CsvReadError = @import("../common.zig").CsvReadError;
 const fields = @import("fields.zig");
 const std = @import("std");
 const assert = std.debug.assert;
-const ParserLimitOpts = @import("../common.zig").ParserLimitOpts;
+const CsvOpts = @import("../common.zig").CsvOpts;
 
 /// Iterates over fields in a CSV row
 pub const RowIter = struct {
@@ -16,7 +16,7 @@ pub const RowIter = struct {
 /// A CSV row
 pub const Row = struct {
     _data: []const u8,
-    _opts: ParserLimitOpts,
+    _opts: CsvOpts,
 
     pub fn iter(self: Row) RowIter {
         return RowIter{
@@ -27,8 +27,8 @@ pub const Row = struct {
 
 /// Options for the parser
 pub const Options = struct {
-    row_limits: ParserLimitOpts = .{},
-    field_limits: ParserLimitOpts = .{},
+    row_limits: CsvOpts = .{},
+    field_limits: CsvOpts = .{},
 };
 
 /// A CSV row parser

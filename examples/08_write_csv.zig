@@ -30,10 +30,11 @@ pub fn main() !void {
     const writer = std.io.getStdErr().writer();
 
     // write our header
-    try zcsv.writer.row(writer, .{ "userid", "name", "age" });
+    const csv_writer = zcsv.writer.init(writer, .{});
+    try csv_writer.writeRow(.{ "userid", "name", "age" });
 
     // Write our data
     for (users) |u| {
-        try zcsv.writer.row(writer, .{ u.id, u.name, u.age });
+        try csv_writer.writeRow(.{ u.id, u.name, u.age });
     }
 }

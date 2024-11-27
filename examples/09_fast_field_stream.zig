@@ -25,10 +25,10 @@ pub fn main() !void {
     // The writer is passed to each call to next
     // This allows us to use a different writer per field
     while (!parser.done()) {
-        // We have to manually decode the field
         try parser.next(tmp_buff.writer());
-        try zcsv.core.decode(tmp_buff.getWritten(), stderr);
-        // Do whatever you need to here for the field
+
+        // Use tmp_buff.getWritten() as needed
+        std.debug.print("{s}", .{tmp_buff.getWritten()});
 
         // This is how you can tell if you're about to move to the next row
         // Note that we aren't at the next row, just that we're about to move

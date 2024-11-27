@@ -7,11 +7,12 @@ const assert = std.debug.assert;
 pub const Field = struct {
     data: []const u8,
     row_end: bool,
+    _opts: common.CsvOpts,
 
     /// Decodes the array CSV data into a writer
     /// This will remove surrounding quotes and unescape escaped quotes
     pub fn decode(self: Field, writer: anytype) !void {
-        try common.decode(self.data, writer);
+        try common.decode(self.data, writer, self._opts);
     }
 
     /// Returns whether a field is "null"
@@ -52,7 +53,6 @@ pub const Field = struct {
 
 // DO NOT CHANGE
 const chunk_size = 64;
-const quotes: @Vector(chunk_size, u8) = @splat(@as(u8, '"'));
 
 const ParserState = struct {
     prev_quote: u64 = 0,
@@ -73,11 +73,12 @@ const ParserState = struct {
 pub const Parser = struct {
     _text: []const u8,
     err: ?CsvReadError = null,
-    _opts: common.ParserLimitOpts,
+    _opts: common.CsvOpts,
     _state: ParserState = .{},
 
     /// Initializes a parser
-    pub fn init(text: []const u8, opts: common.ParserLimitOpts) Parser {
+    pub fn init(text: []const u8, opts: common.CsvOpts) Parser {
+        std.debug.assert(opts.valid());
         return Parser{
             ._text = text,
             ._opts = opts,
@@ -119,13 +120,22 @@ pub const Parser = struct {
         if (self.done()) {
             if (self._state.field_start) {
                 self._state.field_start = false;
-                return Field{ .data = self._text[self._text.len..], .row_end = true };
+                return Field{
+                    .data = self._text[self._text.len..],
+                    .row_end = true,
+                    ._opts = self._opts,
+                };
             }
             return null;
         }
         self._state.field_start = false;
         assert(self.startPos() < self._text.len);
         assert(self.err == null);
+
+        const quote = self._opts.column_quote;
+        const cr = self._opts.column_line_end_prefix;
+        const lf = self._opts.column_line_end;
+        const comma = self._opts.column_delim;
 
         // This means we need to find our next field ending
         const MAX_CHUNK_LEN = self._opts.max_iter;
@@ -146,14 +156,14 @@ pub const Parser = struct {
 
             const chunk = sub_text[0..extract];
 
-            const match_quotes: u64 = match('"', chunk);
+            const match_quotes: u64 = match(quote, chunk);
 
-            const match_commas = match(',', chunk);
+            const match_commas = match(comma, chunk);
 
-            const match_crs = match('\r', chunk);
+            const match_crs = if (cr) |r| match(r, chunk) else @as(u64, 0);
             defer self._state.prev_cr = match_crs;
 
-            var match_lfs = match('\n', chunk);
+            var match_lfs = match(lf, chunk);
 
             const len: u8 = extract;
 
@@ -215,7 +225,7 @@ pub const Parser = struct {
                     return null;
                 }
 
-                if (self._text[self._text.len - 1] == '\r') {
+                if (self._text[self._text.len - 1] == cr) {
                     self.err = CsvReadError.InvalidLineEnding;
                     return null;
                 }
@@ -253,14 +263,14 @@ pub const Parser = struct {
         assert(field_end <= self._text.len);
 
         const field = self._text[self.startPos()..field_end];
-        const row_end = if (t_end >= self._text.len) true else self._text[end_pos] == '\r' or self._text[end_pos] == '\n';
+        const row_end = if (t_end >= self._text.len) true else self._text[end_pos] == cr or self._text[end_pos] == lf;
 
         self._state.skip = false;
         self._state.start_chunk = self._state.end_chunk;
         self._state.start_chunk_pos = chunk_end + 1;
         self._state.field_separators ^= @as(u64, 1) << @truncate(chunk_end);
 
-        if (end_pos < self._text.len and self._text[end_pos] == '\r') {
+        if (end_pos < self._text.len and self._text[end_pos] == cr) {
             if (chunk_end + 1 < chunk_size - 1) {
                 self._state.field_separators ^= @as(u64, 1) << @truncate(chunk_end + 1);
                 self._state.start_chunk_pos = chunk_end + 2;
@@ -274,17 +284,19 @@ pub const Parser = struct {
             }
         }
 
-        if (self.done() and self._text[self._text.len - 1] == ',') {
+        if (self.done() and self._text[self._text.len - 1] == comma) {
             self._state.field_start = true;
             return Field{
                 .data = field,
                 .row_end = false,
+                ._opts = self._opts,
             };
         }
 
         return Field{
             .data = field,
             .row_end = row_end,
+            ._opts = self._opts,
         };
     }
 
@@ -302,8 +314,54 @@ pub const Parser = struct {
 };
 
 /// Initializes parser
-pub fn init(text: []const u8, opts: common.ParserLimitOpts) Parser {
+pub fn init(text: []const u8, opts: common.CsvOpts) Parser {
     return Parser.init(text, opts);
+}
+
+test "simd array custom chars" {
+    const testing = @import("std").testing;
+    const csv = "c1;c2;c3;c4;c5\\\tr1;'ff1;ff2';;ff3;ff4\tr2;' ';' ';' ';' '\tr3;1  ;2  ;3  ;4  \tr4;   ;   ;   ;   \tr5;abc;def;geh;''''\tr6;'''';' '' ';hello;'b b b'\t";
+    var parser = init(csv, .{
+        .column_delim = ';',
+        .column_line_end_prefix = '\\',
+        .column_line_end = '\t',
+        .column_quote = '\'',
+    });
+
+    const expected_fields: usize = 35;
+    const expected_lines: usize = 7;
+    var fields: usize = 0;
+    var lines: usize = 0;
+
+    const expected_decoded = [35][]const u8{
+        "c1", "c2",      "c3",  "c4",    "c5",
+        "r1", "ff1;ff2", "",    "ff3",   "ff4",
+        "r2", " ",       " ",   " ",     " ",
+        "r3", "1  ",     "2  ", "3  ",   "4  ",
+        "r4", "   ",     "   ", "   ",   "   ",
+        "r5", "abc",     "def", "geh",   "'",
+        "r6", "'",       " ' ", "hello", "b b b",
+    };
+
+    var decode_buff: [64]u8 = undefined;
+    var fb_stream = std.io.fixedBufferStream(&decode_buff);
+
+    while (parser.next()) |f| {
+        fb_stream.reset();
+        defer {
+            fields += 1;
+            if (f.row_end) lines += 1;
+        }
+        try f.decode(fb_stream.writer());
+        try testing.expectEqualStrings(expected_decoded[fields], fb_stream.getWritten());
+    }
+
+    if (parser.err) |err| {
+        try testing.expectFmt("", "Unexpected error {any}\n", .{err});
+    }
+
+    try testing.expectEqual(expected_lines, lines);
+    try testing.expectEqual(expected_fields, fields);
 }
 
 test "simd array" {

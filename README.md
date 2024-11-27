@@ -6,6 +6,8 @@ ZCSV is a CSV parser and writer library. The goal is to provide both writers and
 
 This parser does allow for CRLF and LF characters to be inside quoted fields. It also interprets both unquoted CRLF and unquoted LF characters as newlines. CR characters without a following LF character is considered an invalid line ending.
 
+Furthermore, the parsers allow for customizing column delimiters (e.g. `,` => `\t`), line endings (e.g. `\r?\n` => `.?;`), and quotes (e.g. `"` => `'`). This allows parsing of tab delimited and pipe delimited data.
+
 Note: All parsers do operate either line-by-line or field-by-field for all operations, including validation. This means that partial reads may happen when the first several rows of a file are valid but there is an error in the middle.
 
 ```zig
@@ -110,7 +112,9 @@ Examples will use the `test.csv` file by default (assuming they read a file from
 
 ## Writing CSV
 
-Writing CSV files is done line-by-line to a writer. The writing is done without a dynamic memory allocation. Writing is done by using the `writer.row()` method.
+Writing CSV files is done line-by-line to a writer. The writing is done without a dynamic memory allocation. Writing can be done by creating a CSV writer with `zcsv.writer.init` and then calling the `writeRow` and `writeRowStr` methods, or by calling `zcsv.writer.row` and `zcsv.writer.rowStr`. The advantage of creating a writer is that the writer will track the underlying `std.io.Writer` and parser options, whereas those options must be passed to the method variants manually.
+
+The `writeRow` and `row` methods take a tuple of values and will encode most (but not all) builtin Zig values. However, this does require that a developer knows how many columns are needed at compile time. Alternatively, the `writeRowStr` and `rowStr` methods take an slice of byte slices (i.e. strings). This allows developers to pass in arbitrarily sized rows at runtime for encoding.
 
 ```zig
 // Basic usage
@@ -120,15 +124,30 @@ const std = @import("std");
 
 // ....
 
-// Get a writer
+// Get an output writer
 const stdout = std.io.getStdOut().writer();
 
-// Write headers
-zcsv.writer.row(stdout, .{"field1", "field2", "field3", "field4"});
+/// OPTION 1: CSV Writer
 
-// Write a row
+// Get a CSV writer
+const csv_writer = zcsv.writer.init(stdout, .{});
+
+// Write headers
+try csv_writer.writeRow(.{"field1", "field2", "field3e", "field4"});
+
+// Write rows
 for (rowData) |elem| {
-    zcsv.writer.row(stdout, .{elem.f1, elem.f2, elem.f3, elem.f4});
+    try csv_writer.writeRow(.{elem.f1, elem.f2, elem.f3, elem.f4});
+}
+
+// Option 2: Writer methods
+
+// Write headers
+try zcsv.writer.row(stdout, .{"field1", "field2", "field3", "field4"}, .{});
+
+// Write row;
+for (rowData) |elem| {
+    try zcsv.writer.row(stdout, .{elem.f1, elem.f2, elem.f3, elem.f4});
 }
 ```
 
@@ -433,10 +452,10 @@ try stderr.print("> ", .{});
 // The writer is passed to each call to next
 // This allows us to use a different writer per field
 while (!parser.done()) {
-    // We have to manually decode the field
     try parser.next(tmp_buff.writer());
-    try zcsv.core.decode(tmp_buff.getWritten(), stderr);
-    // Do whatever you need to here for the field
+
+    // Use tmp_buff.getWritten() as needed
+    std.debug.print("Decode: {s}\n", .{tmp_buff.getWritten()});
 
     // This is how you can tell if you're about to move to the next row
     // Note that we aren't at the next row, just that we're about to move
@@ -504,7 +523,20 @@ if (parser.err) |err| {
 
 ## Parser Limit Options
 
-All of the parsers have some sort of "infinite loop protection" built in. Generally, this is a limit to 65,536 maximum loop iteration (unless there's an internal stack buffer, then the internal stack buffer will dictate the limit). This limit can be changed by adjusting the options passed into the parser. This is also why all parsers take options (either comptime or runtime options).
+All of the parsers have some sort of "infinite loop protection" built in. Generally, this is a limit to 65,536 maximum loop iteration (unless there's an internal stack buffer, then the internal stack buffer will dictate the limit). This limit can be changed by adjusting the options passed into the parser. This limit can be customized by changing the `max_iter` value of `CsvOpts`.
+
+## Changing delimiters, quotes, and newlines
+
+Each parser and writer will take a `CsvOpts` struct which has options for customizing what tokens will be used when parsing and/or writing. The options are as follows:
+
+- `column_delim`
+    - This indicates the column delimiter character. Defaults to comma `,`
+- `column_quote`
+    - This indicates the column quote character. Defaults to double-quote `"`
+- `column_line_end`
+    - This indicates the last line ending character for a line ending. Defaults to `\n`
+- `column_line_end_prefix`
+    - This indicates the first line ending character for a line ending. It can be set to `null` if line endings should always be one character. This character is always optional when parsing line endings. Defaults to `\r`
 
 ## Memory Lifetimes
 

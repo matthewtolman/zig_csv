@@ -18,23 +18,71 @@ const ParseBoolError = error{
     InvalidBoolInput,
 };
 
-/// Options for Partial Field Stream
-pub const ParserLimitOpts = struct {
+/// Options for Parsers
+/// Options are only valid if the column_* parameters are unique (none equal each other)
+/// Note: It is undefined behavior to give a parse invalid options
+pub const CsvOpts = struct {
+    /// Maximum iterations for a parser to perform when getting next item
+    /// This acts as an infinite loop safeguard
     max_iter: usize = 65_536,
+    /// The prefix to use in a two-character line ending
+    /// If you only want 1 character line endings, set to null
+    column_line_end_prefix: ?u8 = '\r',
+    /// The delimiter between columns
+    column_delim: u8 = ',',
+    /// The line ending to use
+    /// In two-character line endings, this is the second character
+    column_line_end: u8 = '\n',
+    /// The column quote character to use
+    column_quote: u8 = '"',
+
+    /// Checks if it is a valid parser option
+    pub fn valid(self: *const @This()) bool {
+        if (self.column_delim == self.column_quote) {
+            return false;
+        }
+
+        if (self.column_delim == self.column_line_end) {
+            return false;
+        }
+
+        if (self.column_line_end == self.column_quote) {
+            return false;
+        }
+
+        if (self.column_line_end_prefix == null) {
+            return true;
+        } else {
+            if (self.column_line_end_prefix.? == self.column_delim) {
+                return false;
+            }
+
+            if (self.column_line_end_prefix.? == self.column_quote) {
+                return false;
+            }
+
+            if (self.column_line_end_prefix.? == self.column_line_end) {
+                return false;
+            }
+        }
+
+        return true;
+    }
 };
 
 const std = @import("std");
 
 /// Unquotes a quoted CSV field
 /// Assumes the field is a valid CSV field
-pub fn unquoteQuoted(data: []const u8) []const u8 {
-    if (data.len > 2 and data[0] == '"') {
+pub fn unquoteQuoted(data: []const u8, opts: CsvOpts) []const u8 {
+    if (data.len > 2 and data[0] == opts.column_quote) {
         // If we get here, we should be working on quoted CSV data
-        std.debug.assert(data[data.len - 1] == '"');
+        std.debug.assert(data[data.len - 1] == opts.column_quote);
         return data[1..(data.len - 1)];
     } else {
         // If we get here, we should be working on unquoted CSV data
-        std.debug.assert(std.mem.indexOf(u8, data, "\"") == null);
+        const quoted = [_]u8{opts.column_quote};
+        std.debug.assert(std.mem.indexOf(u8, data, quoted[0..]) == null);
         return data;
     }
 }
@@ -51,7 +99,7 @@ test "unquoteQuoted" {
     };
 
     for (test_cases) |tc| {
-        try std.testing.expectEqualStrings(tc.out, unquoteQuoted(tc.in));
+        try std.testing.expectEqualStrings(tc.out, unquoteQuoted(tc.in, .{}));
     }
 }
 
@@ -230,13 +278,14 @@ test "asBool" {
 
 /// Decodes the array CSV data into a writer
 /// This will remove surrounding quotes and unescape escaped quotes
-pub fn decode(field: []const u8, writer: anytype) !void {
-    if (field.len < 2 or field[0] != '"') {
+pub fn decode(field: []const u8, writer: anytype, opts: CsvOpts) !void {
+    const quote = opts.column_quote;
+    if (field.len < 2 or field[0] != quote) {
         try writer.writeAll(field);
         return;
     }
 
-    const data = unquoteQuoted(field);
+    const data = unquoteQuoted(field, opts);
     var nextChar: ?u8 = if (1 < data.len) data[1] else null;
     var curChar: ?u8 = if (0 < data.len) data[0] else null;
     var ni: usize = 1;
@@ -247,12 +296,12 @@ pub fn decode(field: []const u8, writer: anytype) !void {
             curChar = nextChar;
             nextChar = if (ni < data.len) data[ni] else null;
         }
-        if (c != '"') {
+        if (c != quote) {
             try writer.writeByte(c);
             continue;
         }
 
-        if (nextChar == '"') {
+        if (nextChar == quote) {
             defer {
                 ni += 1;
                 curChar = nextChar;
@@ -278,7 +327,7 @@ test "decode" {
     for (test_cases) |tc| {
         var b: [64]u8 = undefined;
         var buff = std.io.fixedBufferStream(&b);
-        try decode(tc.in, buff.writer());
+        try decode(tc.in, buff.writer(), .{});
         try std.testing.expectEqualStrings(tc.out, buff.getWritten());
     }
 }
