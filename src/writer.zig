@@ -7,6 +7,7 @@ const CsvOpts = @import("common.zig").CsvOpts;
 /// Outputted fields are all written with surrounding quotes
 /// Newlines are written after each row
 pub fn rowStr(out_writer: anytype, in_row: []const []const u8, opts: CsvOpts) !void {
+    std.debug.assert(opts.valid());
     for (in_row, 0..) |col, i| {
         if (i != 0) {
             try out_writer.writeByte(opts.column_delim);
@@ -46,6 +47,7 @@ pub fn rowStr(out_writer: anytype, in_row: []const []const u8, opts: CsvOpts) !v
 ///
 /// Error sets are not encodeable
 pub fn row(out_writer: anytype, in_row: anytype, opts: CsvOpts) !void {
+    std.debug.assert(opts.valid());
     const RowType = @TypeOf(in_row);
     const row_type_info = @typeInfo(RowType);
 
@@ -103,6 +105,7 @@ pub fn row(out_writer: anytype, in_row: anytype, opts: CsvOpts) !void {
 /// Writes a value to a CSV writer. Does NOT write the column deliminator
 /// or line endings. Only writes the raw value. Use with care!
 pub fn value(out_writer: anytype, field: anytype, opts: CsvOpts) !void {
+    std.debug.assert(opts.valid());
     const FieldType = @TypeOf(field);
     const field_type_info = @typeInfo(FieldType);
 
@@ -324,6 +327,7 @@ pub fn Writer(OutWriter: type) type {
         /// out - The output writer to write rows to
         /// opts - The options which determine delimiters, line endinges, etc
         pub fn init(out: OutWriter, opts: CsvOpts) @This() {
+            std.debug.assert(opts.valid());
             return .{
                 ._opts = opts,
                 ._writer = out,

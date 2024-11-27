@@ -75,6 +75,7 @@ const std = @import("std");
 /// Unquotes a quoted CSV field
 /// Assumes the field is a valid CSV field
 pub fn unquoteQuoted(data: []const u8, opts: CsvOpts) []const u8 {
+    std.debug.assert(opts.valid());
     if (data.len > 2 and data[0] == opts.column_quote) {
         // If we get here, we should be working on quoted CSV data
         std.debug.assert(data[data.len - 1] == opts.column_quote);
@@ -279,6 +280,7 @@ test "asBool" {
 /// Decodes the array CSV data into a writer
 /// This will remove surrounding quotes and unescape escaped quotes
 pub fn decode(field: []const u8, writer: anytype, opts: CsvOpts) !void {
+    std.debug.assert(opts.valid());
     const quote = opts.column_quote;
     if (field.len < 2 or field[0] != quote) {
         try writer.writeAll(field);
