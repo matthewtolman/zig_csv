@@ -25,19 +25,13 @@ pub const Row = struct {
     }
 };
 
-/// Options for the parser
-pub const Options = struct {
-    row_limits: CsvOpts = .{},
-    field_limits: CsvOpts = .{},
-};
-
 /// A CSV row parser
 /// Will parse a row twice, once for identifying the row end
 /// and once for iterating over fields in a row
 pub const Parser = struct {
     _text: []const u8,
     _field_parser: fields.Parser,
-    _opts: Options,
+    _opts: CsvOpts,
     err: ?CsvReadError = null,
 
     /// Gets the next row in a row
@@ -49,7 +43,7 @@ pub const Parser = struct {
         const start = self._field_parser.startPos();
         var end = start;
 
-        const MAX_ITER = self._opts.row_limits.max_iter;
+        const MAX_ITER = self._opts.max_iter;
         var index: usize = 0;
         while (self._field_parser.next()) |f| {
             if (index >= MAX_ITER) {
@@ -75,22 +69,23 @@ pub const Parser = struct {
 
         return Row{
             ._data = self._text[start..end],
-            ._opts = self._opts.field_limits,
+            ._opts = self._opts,
         };
     }
 
     /// Initializes a parser
-    pub fn init(text: []const u8, opts: Options) Parser {
+    pub fn init(text: []const u8, opts: CsvOpts) Parser {
+        std.debug.assert(opts.valid());
         return Parser{
             ._text = text,
             ._opts = opts,
-            ._field_parser = fields.init(text, opts.field_limits),
+            ._field_parser = fields.init(text, opts),
         };
     }
 };
 
 /// Initializes a new raw parser
-pub fn init(text: []const u8, opts: Options) Parser {
+pub fn init(text: []const u8, opts: CsvOpts) Parser {
     return Parser.init(text, opts);
 }
 

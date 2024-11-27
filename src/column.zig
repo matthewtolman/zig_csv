@@ -258,6 +258,7 @@ pub fn Parser(comptime Reader: type) type {
             reader: Reader,
             opts: CsvOpts,
         ) @This() {
+            std.debug.assert(opts.valid());
             return .{
                 ._allocator = allocator,
                 ._buffer = Fs.init(reader, opts),

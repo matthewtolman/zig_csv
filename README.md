@@ -538,6 +538,10 @@ Each parser and writer will take a `CsvOpts` struct which has options for custom
 - `column_line_end_prefix`
     - This indicates the first line ending character for a line ending. It can be set to `null` if line endings should always be one character. This character is always optional when parsing line endings. Defaults to `\r`
 
+Do note that the parsers and writers do expect each of the above options to be unique, including the line ending and line ending prefix. This means that line endings which require repeating characters (e.g. `\n\n`) are not supported.
+
+Using invalid options is undefined behavior. In safe builds this will usually result in a panic. In non-safe builds the behavior is undefined (e.g. unusual parse behavior, weird errors, infinite loops, etc). Each `CsvOpts` has a `valid()` method which will return whether or not the options are valid. It is recommended that this method be used to validate any user or untrusted input prior to sending it to a parser or a writer.
+
 ## Memory Lifetimes
 
 Slices returned by allocated fields have their underlying memory tied to the lifetime of the row's memory. This means the following will result in a use-after-free:

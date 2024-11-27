@@ -28,7 +28,7 @@ pub fn main() !void {
         try parser.next(tmp_buff.writer());
 
         // Use tmp_buff.getWritten() as needed
-        std.debug.print("{s}", .{tmp_buff.getWritten()});
+        try stderr.print("{s}", .{tmp_buff.getWritten()});
 
         // This is how you can tell if you're about to move to the next row
         // Note that we aren't at the next row, just that we're about to move
