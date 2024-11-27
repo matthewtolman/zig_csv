@@ -1,17 +1,22 @@
 const CsvReadError = @import("common.zig").CsvReadError;
-const ParserLimitOpts = @import("common.zig").ParserLimitOpts;
+const CsvOpts = @import("common.zig").CsvOpts;
 const assert = @import("std").debug.assert;
 
 /// Iterates over the fields of a CSV row
 pub const RowIterator = struct {
     _row: *const Row,
     _pos: usize = 0,
-    _opts: ParserLimitOpts,
+    _opts: CsvOpts,
 
     /// Gets the next field from the CSV iterator
     pub fn next(self: *RowIterator) ?[]const u8 {
         if (self._pos > self._row._data.len) {
             return null;
+        }
+
+        if (self._row._data.len == 0) {
+            defer self._pos = 1;
+            return "";
         }
 
         var in_quote = false;
@@ -26,15 +31,15 @@ pub const RowIterator = struct {
                 cur_index += 1;
             }
 
-            if (cur_index == self._pos and cur == '"') {
+            if (cur_index == self._pos and cur == self._opts.column_quote) {
                 in_quote = true;
-            } else if (cur == '"') {
-                if (cur_index + 1 < self._row._data.len and self._row._data[cur_index + 1] == '"') {
+            } else if (cur == self._opts.column_quote) {
+                if (cur_index + 1 < self._row._data.len and self._row._data[cur_index + 1] == self._opts.column_quote) {
                     continue;
                 } else {
                     in_quote = false;
                 }
-            } else if (cur == ',') {
+            } else if (cur == self._opts.column_delim) {
                 if (in_quote) continue;
                 defer self._pos = cur_index + 1;
                 return self._row._data[self._pos..cur_index];
@@ -45,7 +50,22 @@ pub const RowIterator = struct {
         assert(!in_quote);
 
         defer self._pos = self._row._data.len + 1;
-        return self._row._data[self._pos..];
+        const slice = self._row._data[self._pos..];
+
+        if (slice.len == 0) {
+            return slice;
+        }
+
+        if (slice[slice.len - 1] == self._opts.column_line_end) {
+            if (slice.len > 1 and slice[slice.len - 2] == self._opts.column_line_end_prefix) {
+                return slice[0..(slice.len - 2)];
+            }
+            return slice[0..(slice.len - 1)];
+        }
+        if (slice[slice.len - 1] == self._opts.column_line_end_prefix) {
+            return slice[0..(slice.len - 1)];
+        }
+        return slice;
     }
 };
 
@@ -54,7 +74,7 @@ pub const RowIterator = struct {
 /// Simply returns them as-is
 pub const Row = struct {
     _data: []const u8,
-    _opts: ParserLimitOpts,
+    _opts: CsvOpts,
 
     pub fn iter(self: *const Row) RowIterator {
         return .{ ._row = self, ._opts = self._opts };
@@ -109,11 +129,12 @@ test "raw csvfield iterator" {
 pub const Parser = struct {
     _text: []const u8,
     _pos: usize = 0,
-    _opts: ParserLimitOpts,
+    _opts: CsvOpts,
     err: ?CsvReadError = null,
 
     /// Initializes a row iterator
-    pub fn init(text: []const u8, opts: ParserLimitOpts) Parser {
+    pub fn init(text: []const u8, opts: CsvOpts) Parser {
+        assert(opts.valid());
         return Parser{
             ._text = text,
             ._pos = 0,
@@ -142,18 +163,18 @@ pub const Parser = struct {
                 last = cur;
             }
 
-            if (!in_quote and last == ',' and cur == '"') {
+            if (!in_quote and last == self._opts.column_delim and cur == self._opts.column_quote) {
                 in_quote = true;
-            } else if (cur == '"') {
+            } else if (cur == self._opts.column_quote) {
                 if (!in_quote) {
                     self.err = CsvReadError.UnexpectedQuote;
                     return null;
                 } else if (cur_index + 1 < self._text.len) {
                     const nxt = self._text[cur_index + 1];
-                    if (nxt == '"') {
+                    if (nxt == self._opts.column_quote) {
                         cur_index += 1;
                         continue;
-                    } else if (nxt == ',' or nxt == '\r' or nxt == '\n') {
+                    } else if (nxt == self._opts.column_delim or nxt == self._opts.column_line_end_prefix or nxt == self._opts.column_line_end) {
                         in_quote = false;
                         continue;
                     } else {
@@ -163,11 +184,11 @@ pub const Parser = struct {
                 } else {
                     in_quote = false;
                 }
-            } else if (cur == '\r') {
+            } else if (cur == self._opts.column_line_end_prefix) {
                 if (in_quote) continue;
                 if (cur_index + 1 < self._text.len) {
                     const nxt = self._text[cur_index + 1];
-                    if (nxt == '\n') {
+                    if (nxt == self._opts.column_line_end) {
                         defer self._pos = cur_index + 2;
                         return Row{
                             ._data = self._text[self._pos .. cur_index + 1],
@@ -181,7 +202,7 @@ pub const Parser = struct {
                     self.err = CsvReadError.InvalidLineEnding;
                     return null;
                 }
-            } else if (cur == '\n') {
+            } else if (cur == self._opts.column_line_end) {
                 if (in_quote) continue;
                 defer self._pos = cur_index + 1;
                 assert(cur_index + 1 <= self._text.len);
@@ -213,7 +234,7 @@ pub const Parser = struct {
 };
 
 /// Initializes a new raw parser
-pub fn init(text: []const u8, opts: ParserLimitOpts) Parser {
+pub fn init(text: []const u8, opts: CsvOpts) Parser {
     return Parser.init(text, opts);
 }
 
@@ -304,6 +325,9 @@ test "row and field iterator" {
         \\1,"Jonny",23
         \\2,Jack,32
     ;
+    const expected = [_][]const u8{
+        "userid", "name", "age", "1", "\"Jonny\"", "23", "2", "Jack", "32",
+    };
 
     const fieldCount = 9;
 
@@ -311,12 +335,14 @@ test "row and field iterator" {
     var cnt: usize = 0;
     while (parser.next()) |row| {
         var iter = row.iter();
-        while (iter.next()) |_| {
+        while (iter.next()) |f| {
+            try testing.expectEqualStrings(expected[cnt], f);
             cnt += 1;
         }
     }
 
     try testing.expectEqual(fieldCount, cnt);
+    try testing.expectEqual(parser.err, null);
 }
 
 test "crlf, at 63" {
@@ -339,6 +365,7 @@ test "crlf, at 63" {
     }
 
     try testing.expectEqual(fieldCount, cnt);
+    try testing.expectEqual(parser.err, null);
 }
 
 test "crlf,\" at 63" {
@@ -361,4 +388,63 @@ test "crlf,\" at 63" {
     }
 
     try testing.expectEqual(fieldCount, cnt);
+    try testing.expectEqual(parser.err, null);
+}
+
+test "row and field iterator custom chars" {
+    const testing = @import("std").testing;
+
+    const input = "userid;name;age\t\r1;'Jonny ''Jack''';23\r2;Jack;32";
+    const expected = [_][]const u8{
+        "userid", "name", "age", "1", "'Jonny ''Jack'''", "23", "2", "Jack", "32",
+    };
+
+    const fieldCount = 9;
+
+    var parser = Parser.init(input, .{
+        .column_quote = '\'',
+        .column_delim = ';',
+        .column_line_end = '\r',
+        .column_line_end_prefix = '\t',
+    });
+    var cnt: usize = 0;
+    while (parser.next()) |row| {
+        var iter = row.iter();
+        while (iter.next()) |f| {
+            try testing.expectEqualStrings(expected[cnt], f);
+            cnt += 1;
+        }
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+    try testing.expectEqual(parser.err, null);
+}
+
+test "row and field iterator no opt char" {
+    const testing = @import("std").testing;
+
+    const input = "userid;name;age\t\r1;'Jonny ''Jack''';23\r2;Jack;32";
+    const expected = [_][]const u8{
+        "userid", "name", "age\t", "1", "'Jonny ''Jack'''", "23", "2", "Jack", "32",
+    };
+
+    const fieldCount = 9;
+
+    var parser = Parser.init(input, .{
+        .column_quote = '\'',
+        .column_delim = ';',
+        .column_line_end = '\r',
+        .column_line_end_prefix = null,
+    });
+    var cnt: usize = 0;
+    while (parser.next()) |row| {
+        var iter = row.iter();
+        while (iter.next()) |f| {
+            try testing.expectEqualStrings(expected[cnt], f);
+            cnt += 1;
+        }
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+    try testing.expectEqual(parser.err, null);
 }

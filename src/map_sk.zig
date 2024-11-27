@@ -40,7 +40,7 @@ pub fn Parser(comptime Reader: type) type {
         pub fn init(
             allocator: std.mem.Allocator,
             reader: Reader,
-            opts: column.ParserOpts,
+            opts: column.CsvOpts,
         ) !@This() {
             var parser = column.init(allocator, reader, opts);
             const row = parser.next();
@@ -130,7 +130,7 @@ pub fn Parser(comptime Reader: type) type {
 pub fn init(
     allocator: std.mem.Allocator,
     reader: anytype,
-    opts: column.ParserOpts,
+    opts: column.CsvOpts,
 ) !Parser(@TypeOf(reader)) {
     return Parser(@TypeOf(reader)).init(allocator, reader, opts);
 }

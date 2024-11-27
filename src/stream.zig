@@ -1,6 +1,6 @@
 const std = @import("std");
 const CsvReadError = @import("common.zig").CsvReadError;
-const ParserLimitOpts = @import("common.zig").ParserLimitOpts;
+const CsvOpts = @import("common.zig").CsvOpts;
 
 /// Packed flags and tiny state pieces for field streams
 const FSFlags = packed struct {
@@ -14,8 +14,8 @@ const FSFlags = packed struct {
 
 /// Initializes a CSV field parser with the given reader and options.
 /// The parser will read fields one at a time from the reader, writing them
-/// to an output writer. Fields are parsed based on the configured `ParserLimitOpts`.
-pub fn init(reader: anytype, comptime Writer: type, opts: ParserLimitOpts) Parser(@TypeOf(reader), Writer) {
+/// to an output writer. Fields are parsed based on the configured `CsvOpts`.
+pub fn init(reader: anytype, comptime Writer: type, opts: CsvOpts) Parser(@TypeOf(reader), Writer) {
     return Parser(@TypeOf(reader), Writer).init(reader, opts);
 }
 
@@ -39,11 +39,12 @@ pub fn Parser(
         _reader: Reader,
         _cur: ?u8 = null,
         _next: ?u8 = null,
-        _opts: ParserLimitOpts = .{},
+        _opts: CsvOpts = .{},
         _flags: FSFlags = .{},
 
         /// Creates a new CSV Field Stream
-        pub fn init(reader: Reader, opts: ParserLimitOpts) @This() {
+        pub fn init(reader: Reader, opts: CsvOpts) @This() {
+            std.debug.assert(opts.valid());
             return .{
                 ._reader = reader,
                 ._opts = opts,
@@ -108,6 +109,11 @@ pub fn Parser(
 
         /// Parse the next field
         pub fn next(self: *@This(), writer: Writer) Error!void {
+            const quote = self._opts.column_quote;
+            const comma = self._opts.column_delim;
+            const cr = self._opts.column_line_end_prefix;
+            const lf = self._opts.column_line_end;
+
             // lazy-initialize our parser
             if (!self._flags._started) {
                 // Consume twice to populate our cur and next registers
@@ -136,78 +142,63 @@ pub fn Parser(
                 if (self._flags._in_quote) {
                     // Handle quoted strings
                     if (self.current()) |cur| {
-                        switch (cur) {
-                            '"' => {
-                                if (self.peek()) |p| {
-                                    switch (p) {
-                                        ',', '\r', '\n' => {
-                                            self._flags._in_quote = false;
-                                            try self.consume();
-                                            continue;
-                                        },
-                                        '"' => {
-                                            try self.consume();
-                                            try self.consume();
-                                            try writer.writeByte('"');
-                                        },
-                                        else => {
-                                            return CsvReadError.QuotePrematurelyTerminated;
-                                        },
-                                    }
-                                } else {
+                        if (cur == quote) {
+                            if (self.peek()) |p| {
+                                if (p == comma or p == cr or p == lf) {
                                     self._flags._in_quote = false;
                                     try self.consume();
                                     continue;
+                                } else if (p == quote) {
+                                    try self.consume();
+                                    try self.consume();
+                                    try writer.writeByte(cur);
+                                } else {
+                                    return CsvReadError.QuotePrematurelyTerminated;
                                 }
-                            },
-                            else => |c| {
-                                try writer.writeByte(c);
+                            } else {
+                                self._flags._in_quote = false;
                                 try self.consume();
-                            },
+                                continue;
+                            }
+                        } else {
+                            try writer.writeByte(cur);
+                            try self.consume();
                         }
                     } else {
                         return CsvReadError.UnexpectedEndOfFile;
                     }
                 } else if (self.current()) |cur| {
                     // Handle unquoted strings
-                    switch (cur) {
-                        '"' => {
-                            if (!self._flags._field_start) {
-                                return CsvReadError.UnexpectedQuote;
-                            }
-                            self._flags._in_quote = true;
-                            self._flags._field_start = false;
-                            try self.consume();
-                        },
-                        ',',
-                        => {
-                            self._flags._field_start = true;
-                            self._flags._row_end = false;
-                            try self.consume();
-                            return;
-                        },
-                        '\n',
-                        => {
-                            self._flags._field_start = self.peek() != null;
-                            self._flags._row_end = true;
-                            try self.consume();
-                            return;
-                        },
-                        '\r' => {
-                            if (self.peek() != '\n') {
-                                return CsvReadError.InvalidLineEnding;
-                            }
-                            try self.consume();
-                            try self.consume();
-                            self._flags._field_start = self.peek() != null;
-                            self._flags._row_end = true;
-                            return;
-                        },
-                        else => |c| {
-                            self._flags._field_start = false;
-                            try writer.writeByte(c);
-                            try self.consume();
-                        },
+                    if (cur == quote) {
+                        if (!self._flags._field_start) {
+                            return CsvReadError.UnexpectedQuote;
+                        }
+                        self._flags._in_quote = true;
+                        self._flags._field_start = false;
+                        try self.consume();
+                    } else if (cur == comma) {
+                        self._flags._field_start = true;
+                        self._flags._row_end = false;
+                        try self.consume();
+                        return;
+                    } else if (cur == lf) {
+                        self._flags._field_start = self.peek() != null;
+                        self._flags._row_end = true;
+                        try self.consume();
+                        return;
+                    } else if (cur == cr) {
+                        if (self.peek() != lf) {
+                            return CsvReadError.InvalidLineEnding;
+                        }
+                        try self.consume();
+                        try self.consume();
+                        self._flags._field_start = self.peek() != null;
+                        self._flags._row_end = true;
+                        return;
+                    } else {
+                        self._flags._field_start = false;
+                        try writer.writeByte(cur);
+                        try self.consume();
                     }
                 } else {
                     return;
@@ -226,7 +217,54 @@ pub fn Parser(
     };
 }
 
-test "csv field streamer partial" {
+test "csv field streamer custom chars" {
+    // get our writer
+    var buff = std.ArrayList(u8).init(std.testing.allocator);
+    defer buff.deinit();
+
+    var input = std.io.fixedBufferStream("userid;name;'age';active;\\\t1;'John Doe';23;no;\t12;'Robert ''Bobby'' Junior';98;yes;\\\t21;'Bob';24;yes;\t31;'New\tYork';43;no;\t33;'hello''world''';400;yes;\t34;'''world''';2;yes;\t35;'''''''''';1;no;\t");
+    const reader = input.reader();
+
+    var stream = init(
+        reader,
+        @TypeOf(buff.writer()),
+        .{
+            .column_line_end_prefix = '\\',
+            .column_line_end = '\t',
+            .column_delim = ';',
+            .column_quote = '\'',
+        },
+    );
+
+    const expected = [_][]const u8{
+        "userid", "name",                  "age", "active", "",
+        "1",      "John Doe",              "23",  "no",     "",
+        "12",     "Robert 'Bobby' Junior", "98",  "yes",    "",
+        "21",     "Bob",                   "24",  "yes",    "",
+        "31",     "New\tYork",             "43",  "no",     "",
+        "33",     "hello'world'",          "400", "yes",    "",
+        "34",     "'world'",               "2",   "yes",    "",
+        "35",     "''''",                  "1",   "no",     "",
+    };
+
+    var ei: usize = 0;
+
+    while (!stream.done()) {
+        try stream.next(buff.writer());
+        defer {
+            buff.clearRetainingCapacity();
+            ei += 1;
+        }
+        const atEnd = ei % 5 == 4;
+        const field = buff.items;
+        try std.testing.expectEqualStrings(expected[ei], field);
+        try std.testing.expectEqual(atEnd, stream.atRowEnd());
+    }
+
+    try std.testing.expectEqual(expected.len, ei);
+}
+
+test "csv field streamer 1" {
     // get our writer
     var buff = std.ArrayList(u8).init(std.testing.allocator);
     defer buff.deinit();

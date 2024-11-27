@@ -71,6 +71,7 @@ pub fn build(b: *std.Build) void {
         .{ .file = "examples/09_fast_field_stream.zig", .name = "example_9" },
         .{ .file = "examples/10_fast_array.zig", .name = "example_10" },
         .{ .file = "examples/11_fast_array_fields.zig", .name = "example_11" },
+        .{ .file = "examples/12_custom_delims.zig", .name = "example_12" },
     };
     {
         for (examples) |example| {

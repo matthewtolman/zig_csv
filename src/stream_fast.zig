@@ -43,6 +43,7 @@ const Chunk = struct {
     len: u8 = 0,
     offset: u8 = 0,
     end_seps_passed: bool = false,
+    opts: common.CsvOpts = .{},
 
     pub fn clear(self: *@This()) void {
         self.quoted = 0;
@@ -57,11 +58,15 @@ const Chunk = struct {
 
     fn populate(self: *@This(), prev: *const Chunk) CsvReadError!ChunkFieldCover {
         const chunk = self.bytes[0..self.len];
+        const quote = self.opts.column_quote;
+        const comma = self.opts.column_delim;
+        const cr = self.opts.column_line_end_prefix;
+        const lf = self.opts.column_line_end;
 
-        self.quotes = match('"', chunk);
-        const commas = match(',', chunk);
-        self.crs = match('\r', chunk);
-        var lfs = match('\n', chunk);
+        self.quotes = match(quote, chunk);
+        const commas = match(comma, chunk);
+        self.crs = if (cr) |r| match(r, chunk) else 0;
+        var lfs = match(lf, chunk);
 
         // Add a "terminator" chunk
         if (chunk.len < chunk_size) {
@@ -175,14 +180,26 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
         pub const Error = ReadError || WriteError;
         _reader: Reader,
         _state: ParserState = .{},
-        _opts: common.ParserLimitOpts = .{},
+        _opts: common.CsvOpts = .{},
         _row_end: bool = false,
 
         /// Initializes a parser
-        pub fn init(reader: Reader, opts: common.ParserLimitOpts) @This() {
+        pub fn init(reader: Reader, opts: common.CsvOpts) @This() {
+            std.debug.assert(opts.valid());
             return @This(){
                 ._reader = reader,
                 ._opts = opts,
+                ._state = ParserState{
+                    .prev_chunk = Chunk{
+                        .opts = opts,
+                    },
+                    .next_chunk = Chunk{
+                        .opts = opts,
+                    },
+                    .cur_chunk = Chunk{
+                        .opts = opts,
+                    },
+                },
             };
         }
 
@@ -240,7 +257,7 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
             if (self.done()) {
                 return;
             }
-            var d = decode.init(writer);
+            var d = decode.init(writer, self._opts);
             self.nextImpl(d.writer()) catch |err| {
                 self._state.erred = true;
                 return err;
@@ -280,6 +297,10 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
         }
 
         fn writeChunk(self: *@This(), writer: anytype) Error!ChunkWriteRes {
+            const cr = self._opts.column_line_end_prefix;
+            const lf = self._opts.column_line_end;
+            const comma = self._opts.column_delim;
+
             std.debug.assert(self._state.cur_chunk.len <= chunk_size);
             if (self._state.cur_chunk.len == 0) {
                 return .FINISHED_FIELD;
@@ -292,8 +313,8 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
             var offset = self._state.cur_chunk.offset;
             if (offset == 0) {
                 if (self._state.prev_chunk.len > 0) {
-                    if (self._state.prev_chunk.bytes[self._state.prev_chunk.len - 1] == '\r') {
-                        if (self._state.cur_chunk.bytes[offset] == '\n') {
+                    if (self._state.prev_chunk.bytes[self._state.prev_chunk.len - 1] == cr) {
+                        if (self._state.cur_chunk.bytes[offset] == lf) {
                             offset = 1;
                         }
                     }
@@ -304,7 +325,7 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
 
             if (self._state.cur_chunk.next_delim_track == 0) {
                 const field = self._state.cur_chunk.bytes[offset..self._state.cur_chunk.len];
-                if (field[field.len - 1] == ',') {
+                if (field[field.len - 1] == comma) {
                     self._state.field_start = true;
                 }
                 try writer.writeAll(field);
@@ -327,13 +348,13 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
                     row_end = true;
                 }
             }
-            if (self._state.cur_chunk.bytes[end_index] == '\r') {
+            if (self._state.cur_chunk.bytes[end_index] == cr) {
                 row_end = true;
-            } else if (self._state.cur_chunk.bytes[end_index] == '\n') {
+            } else if (self._state.cur_chunk.bytes[end_index] == lf) {
                 row_end = true;
             }
 
-            if (self._state.cur_chunk.bytes[end_index] == ',') {
+            if (self._state.cur_chunk.bytes[end_index] == comma) {
                 self._state.field_start = true;
                 row_end = false;
             }
@@ -343,7 +364,7 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
             self._state.cur_chunk.offset = out_delim + 1;
             self._state.cur_chunk.clearNextDelim();
 
-            if (self._state.cur_chunk.bytes[end_index] == '\r') {
+            if (self._state.cur_chunk.bytes[end_index] == cr) {
                 self._state.cur_chunk.offset = out_delim + 2;
                 self._state.cur_chunk.clearNextDelim();
                 row_end = true;
@@ -353,6 +374,7 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
         }
 
         fn validateChunk(self: *@This()) CsvReadError!ChunkFieldCover {
+            const cr = self._opts.column_line_end_prefix;
             if (self._state.cur_chunk.atEnd() or self._state.next_chunk.len == 0) {
                 const last_bit_quoted = (self._state.cur_chunk.quoted >> @truncate(chunk_size - 1)) & 1;
                 const last_quote_end = (self._state.cur_chunk.stringEnds() >> @truncate(chunk_size - 1)) & 1;
@@ -361,11 +383,11 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
                 }
 
                 if (self._state.cur_chunk.len > 0) {
-                    if (self._state.cur_chunk.bytes[self._state.cur_chunk.len - 1] == '\r') {
+                    if (self._state.cur_chunk.bytes[self._state.cur_chunk.len - 1] == cr) {
                         return CsvReadError.InvalidLineEnding;
                     }
                 } else if (self._state.prev_chunk.len > 0) {
-                    if (self._state.prev_chunk.bytes[self._state.prev_chunk.len - 1] == '\r') {
+                    if (self._state.prev_chunk.bytes[self._state.prev_chunk.len - 1] == cr) {
                         return CsvReadError.InvalidLineEnding;
                     }
                 }
@@ -382,8 +404,53 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
 }
 
 /// Initializes parser
-pub fn init(reader: anytype, comptime Writer: type, opts: common.ParserLimitOpts) Parser(@TypeOf(reader), Writer) {
+pub fn init(reader: anytype, comptime Writer: type, opts: common.CsvOpts) Parser(@TypeOf(reader), Writer) {
     return Parser(@TypeOf(reader), Writer).init(reader, opts);
+}
+
+test "simd array custom delims" {
+    const testing = @import("std").testing;
+    var csv = std.io.fixedBufferStream(
+        "c1;c2;c3;c4;c5\\\tr1;'ff1;ff2';;ff3;ff4\tr2;' ';' ';' ';' '\tr3;1  ;2  ;3  ;4\tr4;   ;   ;   ;\tr5;abc;def;geh;''''\tr6;'''';' '' ';hello;'b b b'\t",
+    );
+    const expected_fields: usize = 35;
+    const expected_lines: usize = 7;
+    var fields: usize = 0;
+    var lines: usize = 0;
+
+    const expected_decoded = [35][]const u8{
+        "c1", "c2",      "c3",  "c4",    "c5",
+        "r1", "ff1;ff2", "",    "ff3",   "ff4",
+        "r2", " ",       " ",   " ",     " ",
+        "r3", "1  ",     "2  ", "3  ",   "4",
+        "r4", "   ",     "   ", "   ",   "",
+        "r5", "abc",     "def", "geh",   "'",
+        "r6", "'",       " ' ", "hello", "b b b",
+    };
+
+    var fb_buff: [64]u8 = undefined;
+    var fb_stream = std.io.fixedBufferStream(&fb_buff);
+
+    const parser_opts: common.CsvOpts = .{
+        .column_quote = '\'',
+        .column_delim = ';',
+        .column_line_end = '\t',
+        .column_line_end_prefix = '\\',
+    };
+    var parser = init(csv.reader(), @TypeOf(fb_stream.writer()), parser_opts);
+
+    while (!parser.done()) {
+        fb_stream.reset();
+        try parser.next(fb_stream.writer());
+        defer {
+            fields += 1;
+            if (parser.atRowEnd()) lines += 1;
+        }
+        try testing.expectEqualStrings(expected_decoded[fields], fb_stream.getWritten());
+    }
+
+    try testing.expectEqual(expected_lines, lines);
+    try testing.expectEqual(expected_fields, fields);
 }
 
 test "simd array" {
@@ -415,20 +482,16 @@ test "simd array" {
     var fb_buff: [64]u8 = undefined;
     var fb_stream = std.io.fixedBufferStream(&fb_buff);
 
-    var decode_buff: [64]u8 = undefined;
-    var decode_stream = std.io.fixedBufferStream(&decode_buff);
     var parser = init(csv.reader(), @TypeOf(fb_stream.writer()), .{});
 
     while (!parser.done()) {
         fb_stream.reset();
-        decode_stream.reset();
         try parser.next(fb_stream.writer());
-        try common.decode(fb_stream.getWritten(), decode_stream.writer());
         defer {
             fields += 1;
             if (parser.atRowEnd()) lines += 1;
         }
-        try testing.expectEqualStrings(expected_decoded[fields], decode_stream.getWritten());
+        try testing.expectEqualStrings(expected_decoded[fields], fb_stream.getWritten());
     }
 
     try testing.expectEqual(expected_lines, lines);
@@ -460,20 +523,16 @@ test "array field streamer" {
     };
 
     var ei: usize = 0;
-    var decode_buff: [64]u8 = undefined;
-    var decode_stream = std.io.fixedBufferStream(&decode_buff);
     var parser = init(input.reader(), @TypeOf(buff.writer()), .{});
 
     while (!parser.done()) {
         defer {
-            decode_stream.reset();
             buff.clearRetainingCapacity();
             ei += 1;
         }
         try parser.next(buff.writer());
-        try common.decode(buff.items, decode_stream.writer());
         const atEnd = ei % 5 == 4;
-        const field = decode_stream.getWritten();
+        const field = buff.items;
         try std.testing.expectEqualStrings(expected[ei], field);
         try std.testing.expectEqual(atEnd, parser.atRowEnd());
     }

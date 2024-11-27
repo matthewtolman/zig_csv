@@ -1,4 +1,5 @@
-// This example will parse CSV from memory and then print CSV rows
+// This example will parse Tab delimited with single quotes from memory and
+// then print the data as CSV rows
 
 const zcsv = @import("zcsv");
 const std = @import("std");
@@ -18,16 +19,15 @@ pub fn main() !void {
     const stderr = std.io.getStdErr().writer();
 
     const csv =
-        \\productid,productname,productsales
-        \\1238943,"""Juice"" Box",9238
-        \\3892392,"I can't believe it's not chicken!",480
-        \\5934810,"Win The Fish",-
-    ;
+        "productid\tproductname\tproductsales\n\\1238943\t'''Juice'' Box'\t9238\n\\3892392\t'I can''t believe it''s not chicken!'\t480\n\\5934810\t'Win The Fish'\t-";
 
     var buff = std.io.fixedBufferStream(csv);
 
     // Get our parser for stdin
-    var parser = zcsv.column.init(allocator, buff.reader(), .{});
+    var parser = zcsv.column.init(allocator, buff.reader(), .{
+        .column_delim = '\t',
+        .column_quote = '\'',
+    });
 
     // Parse a new row
     while (parser.next()) |row| {

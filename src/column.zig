@@ -1,6 +1,6 @@
 const std = @import("std");
 const CsvReadError = @import("common.zig").CsvReadError;
-const ParserLimitOpts = @import("common.zig").ParserLimitOpts;
+pub const CsvOpts = @import("common.zig").CsvOpts;
 const streamFast = @import("stream_fast.zig");
 
 /// Internal representation of a field in a row
@@ -232,11 +232,6 @@ pub const Row = struct {
     }
 };
 
-/// Parser options
-pub const ParserOpts = struct {
-    limits: ParserLimitOpts = .{},
-};
-
 /// Creates a CSV parser over a reader that stores parsed data on the heap
 /// Will parse the reader line-by-line instead of all at once
 /// Memory is owned by returned rows, so call Row.deinit()
@@ -261,11 +256,11 @@ pub fn Parser(comptime Reader: type) type {
         pub fn init(
             allocator: std.mem.Allocator,
             reader: Reader,
-            opts: ParserOpts,
+            opts: CsvOpts,
         ) @This() {
             return .{
                 ._allocator = allocator,
-                ._buffer = Fs.init(reader, opts.limits),
+                ._buffer = Fs.init(reader, opts),
             };
         }
 
@@ -353,7 +348,7 @@ pub fn Parser(comptime Reader: type) type {
 pub fn init(
     allocator: std.mem.Allocator,
     reader: anytype,
-    opts: ParserOpts,
+    opts: CsvOpts,
 ) Parser(@TypeOf(reader)) {
     return Parser(@TypeOf(reader)).init(allocator, reader, opts);
 }
@@ -530,6 +525,62 @@ test "csv parser stack" {
             try std.testing.expectEqualStrings(e_row[ef], field.data());
         }
     }
+}
+
+test "csv parse into value custom chars" {
+    const User = struct {
+        id: i64,
+        name: ?[]const u8,
+        age: ?u32,
+        active: bool,
+    };
+
+    const buffer = "userid;name;age;active\\\t1;'John ''Johnny'' Doe';32;yes\t2;'Smith; Jack';53;no\t3;Peter;18;yes\t4;;;no\t";
+
+    var input = std.io.fixedBufferStream(buffer);
+    var parser = init(
+        std.testing.allocator,
+        input.reader(),
+        .{
+            .column_quote = '\'',
+            .column_line_end_prefix = '\\',
+            .column_line_end = '\t',
+            .column_delim = ';',
+        },
+    );
+
+    const expected = [_]User{
+        User{
+            .id = 1,
+            .name = "John 'Johnny' Doe",
+            .age = 32,
+            .active = true,
+        },
+        User{ .id = 2, .name = "Smith; Jack", .age = 53, .active = false },
+        User{ .id = 3, .name = "Peter", .age = 18, .active = true },
+        User{ .id = 4, .name = null, .age = null, .active = false },
+    };
+
+    var ei: usize = 0;
+    while (parser.next()) |row| {
+        defer {
+            row.deinit();
+            ei += 1;
+        }
+        if (ei == 0) {
+            continue;
+        }
+
+        const user = User{
+            .id = try (try row.field(0)).asInt(i64, 10) orelse 0,
+            .name = (try row.field(1)).asSlice(),
+            .age = try (try row.field(2)).asInt(u32, 10),
+            .active = try (try row.field(3)).asBool() orelse false,
+        };
+
+        try std.testing.expectEqualDeep(expected[ei - 1], user);
+    }
+    try std.testing.expectEqual(expected.len + 1, ei);
 }
 
 test "csv parse into value" {
