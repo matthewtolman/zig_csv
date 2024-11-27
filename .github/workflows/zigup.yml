@@ -42,8 +42,8 @@ jobs:
       # Run with supported dev branch
       - name: Test with supported dev
         run: |
-          ./zigup fetch 0.14.0-dev.2164+6b2c8fc68
-          ./zigup run 0.14.0-dev.2164+6b2c8fc68 build test
+          ./zigup fetch 0.14.0-dev.2316+68b3f5086 
+          ./zigup run 0.14.0-dev.2316+68b3f5086 build test
 
       # Run with supported latest master
       # - name: Test with latest master
