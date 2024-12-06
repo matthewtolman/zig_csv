@@ -1,10 +1,11 @@
 const std = @import("std");
-const CsvReadError = @import("common.zig").CsvReadError;
-pub const CsvOpts = @import("common.zig").CsvOpts;
-const streamFast = @import("stream_fast.zig");
+const CsvReadError = @import("../common.zig").CsvReadError;
+const ParseBoolError = @import("../common.zig").ParseBoolError;
+pub const CsvOpts = @import("../common.zig").CsvOpts;
+const streamFast = @import("../zero_allocs/stream.zig");
 
 /// Internal representation of a field in a row
-const RowField = struct {
+pub const RowField = struct {
     _pos: usize,
     _len: usize,
 
@@ -18,13 +19,16 @@ const RowField = struct {
 
 /// Represents a CSV field copied to the heap
 pub const Field = struct {
-    const ParseBoolError = error{
-        InvalidBoolInput,
-    };
     // This references an internal buffer in the row
     _data: []const u8,
 
-    /// Returns the string data tied to the field
+    /// Writes the string data tied to the field
+    pub fn decode(self: *const Field, writer: anytype) !void {
+        try writer.writeAll(self._data);
+    }
+
+    /// Returns the decoded data for the field
+    /// Note: Unique to allocating fields
     pub fn data(self: *const Field) []const u8 {
         return self._data;
     }
@@ -41,116 +45,6 @@ pub const Field = struct {
         try copy.resize(self.data().len);
         std.mem.copyForwards(u8, copy.items, self.data());
         return copy;
-    }
-
-    /// Returns a slice string of the data
-    /// If the data is empty or equal to "-", will return null instead of an
-    /// empty string
-    /// If you don't want null, use ".data()"
-    /// Note: the data lifetime is tied to the CSV row lifetime
-    pub fn asSlice(self: *const Field) ?[]const u8 {
-        if (self.isNull()) {
-            return null;
-        }
-        return self.data();
-    }
-
-    /// Checks if a value is "null"-like
-    /// Null is either the empty string or "-"
-    pub fn isNull(self: *const Field) bool {
-        if (self.data().len == 0 or std.mem.eql(u8, "-", self.data())) {
-            return true;
-        }
-        return false;
-    }
-
-    /// Parses a field into a nullable integer ("" and "-" == null)
-    pub fn asInt(
-        self: Field,
-        comptime T: type,
-        base: u8,
-    ) std.fmt.ParseIntError!?T {
-        if (self.isNull()) {
-            return null;
-        }
-        const ti = @typeInfo(T);
-        // Zig 0.13.0 uses SnakeCase
-        // Zig 0.14.0-dev uses lower_case
-        if (@hasField(@TypeOf(ti), "Int")) {
-            if (comptime ti.Int.signedness == .unsigned) {
-                const v: T = try std.fmt.parseUnsigned(T, self.data(), base);
-                return v;
-            } else {
-                const v: T = try std.fmt.parseInt(T, self.data(), base);
-                return v;
-            }
-        } else {
-            if (comptime ti.int.signedness == .unsigned) {
-                const v: T = try std.fmt.parseUnsigned(T, self.data(), base);
-                return v;
-            } else {
-                const v: T = try std.fmt.parseInt(T, self.data(), base);
-                return v;
-            }
-        }
-    }
-
-    /// Parses a field into a nullable float ("" and "-" == null)
-    pub fn asFloat(self: Field, comptime T: type) std.fmt.ParseFloatError!?T {
-        if (self.isNull()) {
-            return null;
-        }
-        return std.fmt.parseFloat(T, self.data());
-    }
-
-    /// Parses a field into a nullable bool ("" and "-" == null)
-    /// Truthy values (case insensitive):
-    ///     yes, y, true, t, 1
-    /// Falsey values (case insensitive):
-    ///     no, n, false, f, 0
-    pub fn asBool(self: Field) ParseBoolError!?bool {
-        if (self.isNull()) {
-            return null;
-        }
-        if (std.mem.eql(u8, "1", self.data())) {
-            return true;
-        }
-        if (std.mem.eql(u8, "0", self.data())) {
-            return false;
-        }
-
-        var lower: [6]u8 = .{ 0, 0, 0, 0, 0, 0 };
-        var end: usize = 0;
-        for (0..lower.len) |i| {
-            end = i;
-            if (i >= self.data().len) {
-                break;
-            }
-            lower[i] = self.data()[i] | 0b0100000;
-        }
-
-        const l = lower[0..end];
-
-        if (std.mem.eql(u8, "y", l)) {
-            return true;
-        }
-        if (std.mem.eql(u8, "n", l)) {
-            return false;
-        }
-        if (std.mem.eql(u8, "no", l)) {
-            return false;
-        }
-        if (std.mem.eql(u8, "yes", l)) {
-            return true;
-        }
-        if (std.mem.eql(u8, "true", l)) {
-            return true;
-        }
-        if (std.mem.eql(u8, "false", l)) {
-            return false;
-        }
-
-        return ParseBoolError.InvalidBoolInput;
     }
 };
 
@@ -191,6 +85,7 @@ pub const Row = struct {
 
     /// Gets the field/column at an index
     /// If the index is out of bounds will return an error
+    /// O(1)
     pub fn field(self: *const Row, index: usize) OutOfBoundsError!Field {
         if (index >= self.len()) {
             return OutOfBoundsError.IndexOutOfBounds;
@@ -200,30 +95,12 @@ pub const Row = struct {
 
     /// Gets the field/column at an index
     /// If the index is out of bounds will return null
+    /// O(1)
     pub fn fieldOrNull(self: *const Row, index: usize) ?Field {
         if (index >= self.len()) {
             return null;
         }
-        return self._fields.items[index].toField(self);
-    }
-
-    /// Clones a row and its memory
-    /// Used in the map parsers
-    pub fn clone(self: *const Row, alloc: std.mem.Allocator) !Row {
-        var new = Row{
-            ._fields = std.ArrayList(RowField).init(alloc),
-            ._bytes = std.ArrayList(u8).init(alloc),
-        };
-
-        errdefer new.deinit();
-
-        try new._fields.resize(self._fields.items.len);
-        try new._bytes.resize(self._bytes.items.len);
-
-        std.mem.copyForwards(RowField, new._fields.items, self._fields.items);
-        std.mem.copyForwards(u8, new._bytes.items, self._bytes.items);
-
-        return new;
+        return self.field(index) catch unreachable;
     }
 
     /// Returns an iterator over the row
@@ -529,6 +406,7 @@ test "csv parser stack" {
 }
 
 test "csv parse into value custom chars" {
+    const decode = @import("../decode.zig");
     const User = struct {
         id: i64,
         name: ?[]const u8,
@@ -573,10 +451,10 @@ test "csv parse into value custom chars" {
         }
 
         const user = User{
-            .id = try (try row.field(0)).asInt(i64, 10) orelse 0,
-            .name = (try row.field(1)).asSlice(),
-            .age = try (try row.field(2)).asInt(u32, 10),
-            .active = try (try row.field(3)).asBool() orelse false,
+            .id = try decode.fieldToInt(i64, try row.field(0), 10) orelse 0,
+            .name = decode.fieldToDecodedStr(try row.field(1)),
+            .age = try decode.fieldToInt(u32, try row.field(2), 10),
+            .active = try decode.fieldToBool(try row.field(3)) orelse false,
         };
 
         try std.testing.expectEqualDeep(expected[ei - 1], user);
@@ -585,6 +463,7 @@ test "csv parse into value custom chars" {
 }
 
 test "csv parse into value" {
+    const decode = @import("../decode.zig");
     const User = struct {
         id: i64,
         name: ?[]const u8,
@@ -630,10 +509,10 @@ test "csv parse into value" {
         }
 
         const user = User{
-            .id = try (try row.field(0)).asInt(i64, 10) orelse 0,
-            .name = (try row.field(1)).asSlice(),
-            .age = try (try row.field(2)).asInt(u32, 10),
-            .active = try (try row.field(3)).asBool() orelse false,
+            .id = try decode.fieldToInt(i64, try row.field(0), 10) orelse 0,
+            .name = decode.fieldToDecodedStr(try row.field(1)),
+            .age = try decode.fieldToInt(u32, try row.field(2), 10),
+            .active = try decode.fieldToBool(try row.field(3)) orelse false,
         };
 
         try std.testing.expectEqualDeep(expected[ei - 1], user);

@@ -22,7 +22,7 @@ pub fn parseFile(fileName: []const u8) !void {
     defer file.close();
 
     // We can read directly from our file reader
-    var parser = zcsv.column.init(alloc, file.reader(), .{});
+    var parser = zcsv.allocs.column.init(alloc, file.reader(), .{});
     while (parser.next()) |row| {
         // Clean up our memory
         defer row.deinit();

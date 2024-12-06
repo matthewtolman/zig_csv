@@ -1,5 +1,5 @@
 const std = @import("std");
-const common = @import("common.zig");
+const common = @import("../common.zig");
 
 /// Decodes CSV values and writes the decoded values to an underlying stream
 /// Operates on a stream basis to avoid internal buffering

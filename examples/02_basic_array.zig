@@ -12,12 +12,12 @@ pub fn main() !void {
         \\"John","doe",no
     ;
 
-    var parser = zcsv.slice.rows.init(buf, .{});
+    var parser = zcsv.zero_allocs.slice.init(buf, .{});
     while (parser.next()) |row| {
         std.log.info("New row", .{});
         var iter = row.iter();
         while (iter.next()) |field| {
-            std.log.info("Found: {s}", .{field.data});
+            std.log.info("Found: {s}", .{field.raw()});
         }
     }
     std.log.info("DONE!", .{});

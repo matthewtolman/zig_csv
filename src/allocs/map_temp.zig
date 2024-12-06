@@ -4,23 +4,25 @@ const column = @import("column.zig");
 pub const Field = column.Field;
 
 /// Represents a CSV row
-pub const Row = struct {
-    _map: std.StringHashMap(Field),
-    _orig_row: column.Row,
+pub const Row = @import("map.zig").Row;
 
-    /// Gets a const pointer to the underlying map
-    pub fn data(self: *const @This()) *const std.StringHashMap(Field) {
-        return &self._map;
-    }
+/// Clones a row and its memory
+fn cloneRow(self: *const column.Row, alloc: std.mem.Allocator) !column.Row {
+    var new = column.Row{
+        ._fields = std.ArrayList(column.RowField).init(alloc),
+        ._bytes = std.ArrayList(u8).init(alloc),
+    };
 
-    /// Frees the associated memory
-    /// Does NOT free map keys since that is held by the parser
-    pub fn deinit(self: @This()) void {
-        var shallowCopy = self._map;
-        shallowCopy.deinit();
-        self._orig_row.deinit();
-    }
-};
+    errdefer new.deinit();
+
+    try new._fields.resize(self._fields.items.len);
+    try new._bytes.resize(self._bytes.items.len);
+
+    std.mem.copyForwards(column.RowField, new._fields.items, self._fields.items);
+    std.mem.copyForwards(u8, new._bytes.items, self._bytes.items);
+
+    return new;
+}
 
 /// A parser that parses a CSV file into a map with key memory shared across
 /// rows.
@@ -59,7 +61,7 @@ pub fn Parser(comptime Reader: type) type {
             }
         }
 
-        /// Frees the header-related memory
+        /// Frees the parser-related memory
         /// Note: this will free the memory for all keys for any maps returned
         /// by next
         pub fn deinit(self: @This()) void {
@@ -97,8 +99,9 @@ pub fn Parser(comptime Reader: type) type {
         /// Error returning is used so we can use errdefer to clean memory
         fn nextImpl(self: *@This(), row: *column.Row) Error!?Row {
             var res = Row{
+                ._header_row = null, // sharing row data with parser
                 ._map = std.StringHashMap(Field).init(self._alloc),
-                ._orig_row = try row.clone(self._alloc),
+                ._orig_row = try cloneRow(row, self._alloc),
             };
             // Clean up our memory
             errdefer res.deinit();
@@ -136,6 +139,7 @@ pub fn init(
 }
 
 test "csv parse into map sk" {
+    const decode = @import("../decode.zig");
     const User = struct {
         id: i64,
         name: ?[]const u8,
@@ -175,10 +179,20 @@ test "csv parse into map sk" {
         }
 
         const user = User{
-            .id = try (row.data().get("userid").?.asInt(i64, 10)) orelse 0,
-            .name = row.data().get("name").?.asSlice(),
-            .age = try (row.data().get("age").?.asInt(u32, 10)),
-            .active = try (row.data().get("active").?.asBool()) orelse false,
+            .id = try decode.fieldToInt(
+                i64,
+                row.data().get("userid").?,
+                10,
+            ) orelse 0,
+            .name = decode.fieldToDecodedStr(row.data().get("name").?),
+            .age = try decode.fieldToInt(
+                u32,
+                row.data().get("age").?,
+                10,
+            ),
+            .active = try decode.fieldToBool(
+                row.data().get("active").?,
+            ) orelse false,
         };
 
         try std.testing.expectEqualDeep(expected[ei], user);
@@ -186,6 +200,7 @@ test "csv parse into map sk" {
 }
 
 test "csv parse into map ck larger" {
+    const decode = @import("../decode.zig");
     const User = struct {
         id: i64,
         name: ?[]const u8,
@@ -234,10 +249,20 @@ test "csv parse into map ck larger" {
         }
 
         const user = User{
-            .id = try (row.data().get("userid").?.asInt(i64, 10)) orelse 0,
-            .name = row.data().get("name").?.asSlice(),
-            .age = try (row.data().get("age").?.asInt(u32, 10)),
-            .active = try (row.data().get("active").?.asBool()) orelse false,
+            .id = try decode.fieldToInt(
+                i64,
+                row.data().get("userid").?,
+                10,
+            ) orelse 0,
+            .name = decode.fieldToDecodedStr(row.data().get("name").?),
+            .age = try decode.fieldToInt(
+                u32,
+                row.data().get("age").?,
+                10,
+            ),
+            .active = try decode.fieldToBool(
+                row.data().get("active").?,
+            ) orelse false,
         };
 
         try std.testing.expectEqualDeep(expected[ei], user);

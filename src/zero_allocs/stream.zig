@@ -1,7 +1,7 @@
-const CsvReadError = @import("common.zig").CsvReadError;
-const ParseBoolError = @import("common.zig").ParseBoolError;
-const common = @import("common.zig");
-const decode = @import("decode_writer.zig");
+const common = @import("../common.zig");
+const CsvReadError = common.CsvReadError;
+const ParseBoolError = common.ParseBoolError;
+const decode = @import("../internal/decode_writer.zig");
 const std = @import("std");
 
 // DO NOT CHANGE
@@ -404,7 +404,11 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
 }
 
 /// Initializes parser
-pub fn init(reader: anytype, comptime Writer: type, opts: common.CsvOpts) Parser(@TypeOf(reader), Writer) {
+pub fn init(
+    reader: anytype,
+    comptime Writer: type,
+    opts: common.CsvOpts,
+) Parser(@TypeOf(reader), Writer) {
     return Parser(@TypeOf(reader), Writer).init(reader, opts);
 }
 
