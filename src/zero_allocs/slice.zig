@@ -1,60 +1,180 @@
-const CsvReadError = @import("../common.zig").CsvReadError;
-const ParseBoolError = @import("../common.zig").ParseBoolError;
 const common = @import("../common.zig");
+const CsvReadError = common.CsvReadError;
+const ParseBoolError = common.ParseBoolError;
+const CsvOpts = common.CsvOpts;
 const std = @import("std");
 const assert = std.debug.assert;
 
+/// Represents a field in the CSV file
 pub const Field = struct {
-    data: []const u8,
-    row_end: bool,
+    _data: []const u8,
     _opts: common.CsvOpts,
 
     /// Decodes the array CSV data into a writer
     /// This will remove surrounding quotes and unescape escaped quotes
-    pub fn decode(self: Field, writer: anytype) !void {
-        try common.decode(self.data, writer, self._opts);
+    pub fn decode(self: *const Field, writer: anytype) !void {
+        try common.decode(self._data, writer, self._opts);
     }
 
-    /// Returns whether a field is "null"
-    /// "null" includes empty strings and the string "-"
-    pub fn isNull(self: Field) bool {
-        return common.isNull(common.unquoteQuoted(self.data));
+    /// Returns the encoded data for the field
+    /// Note: Unique to allocating fields
+    pub fn raw(self: *const Field) []const u8 {
+        return self._data;
     }
 
-    /// Tries to decode the field as an integer
-    /// Will remove surrounding quotes before attempting
-    pub fn asInt(
-        self: Field,
-        comptime T: type,
-        base: u8,
-    ) std.fmt.ParseIntError!?T {
-        // unquote quoted text
-        return common.asInt(common.unquoteQuoted(self.data), T, base);
+    pub fn opts(self: *const Field) common.CsvOpts {
+        return self._opts;
     }
 
-    /// Tries to decode the field as a float
-    /// Will remove surrounding quotes before attempting
-    pub fn asFloat(
-        self: Field,
-        comptime T: type,
-    ) std.fmt.ParseFloatError!?T {
-        return common.asFloat(common.unquoteQuoted(self.data), T);
+    /// Clones memory using a specific allocator
+    /// Useful when wanting to keep a field's memory past the lifetime of the
+    /// row or field
+    pub fn clone(
+        self: *const Field,
+        allocator: std.mem.Allocator,
+    ) std.mem.Allocator.Error!std.ArrayList(u8) {
+        var copy = std.ArrayList(u8).init(allocator);
+        errdefer copy.deinit();
+        try common.decode(self._data, copy.writer(), self._opts);
+        return copy;
+    }
+};
+
+/// Represents a field inside a row
+pub const RowField = struct {
+    field: Field,
+    row_end: bool,
+};
+
+/// Iterates over fields in a CSV row
+pub const RowIter = struct {
+    _field_parser: FieldParser,
+
+    pub fn next(self: *RowIter) ?Field {
+        if (self._field_parser.next()) |f| {
+            return f.field;
+        }
+        return null;
+    }
+};
+
+/// A CSV row
+pub const Row = struct {
+    const OutOfBoundsError = error{IndexOutOfBounds};
+    _data: []const u8,
+    _opts: CsvOpts,
+    _len: usize,
+
+    /// Get a row iterator
+    pub fn iter(self: Row) RowIter {
+        return RowIter{
+            ._field_parser = fieldsInit(self._data, self._opts),
+        };
     }
 
-    /// Tries to decode the field as a boolean
-    /// Truthy values (case insensitive):
-    ///     yes, y, true, t, 1
-    /// Falsey values (case insensitive):
-    ///     no, n, false, f, 0
-    pub fn asBool(self: Field) ParseBoolError!?bool {
-        return common.asBool(common.unquoteQuoted(self.data));
+    /// Returns the number of fields/columns in a row
+    pub fn len(self: *const Row) usize {
+        return self._fields.items.len;
+    }
+
+    /// Gets the field/column at an index
+    /// If the index is out of bounds will return an error
+    /// O(n)
+    pub fn field(self: *const Row, index: usize) OutOfBoundsError!Field {
+        if (index >= self.len()) {
+            return OutOfBoundsError.IndexOutOfBounds;
+        }
+        var it = self.iter();
+        var i: usize = 0;
+        while (it.next()) |f| {
+            if (i == index) {
+                return f;
+            }
+            i += 1;
+        }
+        return OutOfBoundsError.IndexOutOfBounds;
+    }
+
+    /// Gets the field/column at an index
+    /// If the index is out of bounds will return null
+    /// O(n)
+    pub fn fieldOrNull(self: *const Row, index: usize) ?Field {
+        if (index >= self.len()) {
+            return null;
+        }
+        return self.field(index) catch null;
+    }
+};
+
+/// Initializes a new parser
+pub fn init(text: []const u8, opts: common.CsvOpts) Parser {
+    return Parser.init(text, opts);
+}
+
+/// A CSV row parser
+/// Will parse a row twice, once for identifying the row end
+/// and once for iterating over fields in a row
+pub const Parser = struct {
+    _text: []const u8,
+    _field_parser: FieldParser,
+    _opts: CsvOpts,
+    err: ?CsvReadError = null,
+
+    /// Gets the next row in a row
+    pub fn next(self: *Parser) ?Row {
+        if (self._field_parser.done()) {
+            return null;
+        }
+
+        const start = self._field_parser.startPos();
+        var end = start;
+
+        const MAX_ITER = self._opts.max_iter;
+        var index: usize = 0;
+        while (self._field_parser.next()) |f| {
+            if (index >= MAX_ITER) {
+                self.err = CsvReadError.InternalLimitReached;
+                return null;
+            }
+            defer index += 1;
+            self.err = self._field_parser.err;
+            if (self.err) |_| {
+                return null;
+            }
+            end += f.field._data.len + 1;
+            end = @min(end, self._text.len);
+            if (f.row_end) {
+                break;
+            }
+        }
+        self.err = self._field_parser.err;
+
+        assert(start < self._text.len);
+        assert(end <= self._text.len);
+        assert(end >= start);
+
+        return Row{
+            ._data = self._text[start..end],
+            ._opts = self._opts,
+            ._len = index,
+        };
+    }
+
+    /// Initializes a parser
+    pub fn init(text: []const u8, opts: CsvOpts) Parser {
+        std.debug.assert(opts.valid());
+        return Parser{
+            ._text = text,
+            ._opts = opts,
+            ._field_parser = fieldsInit(text, opts),
+        };
     }
 };
 
 // DO NOT CHANGE
 const chunk_size = 64;
 
-const ParserState = struct {
+const FieldParserState = struct {
     prev_quote: u64 = 0,
     prev_cr: u64 = 0,
     prev_quote_ends: u64 = 0,
@@ -70,16 +190,16 @@ const ParserState = struct {
 
 /// Fast fields parser
 /// Parses individual fields and marks fields at the end of a row
-pub const Parser = struct {
+pub const FieldParser = struct {
     _text: []const u8,
     err: ?CsvReadError = null,
     _opts: common.CsvOpts,
-    _state: ParserState = .{},
+    _state: FieldParserState = .{},
 
     /// Initializes a parser
-    pub fn init(text: []const u8, opts: common.CsvOpts) Parser {
+    pub fn init(text: []const u8, opts: common.CsvOpts) FieldParser {
         std.debug.assert(opts.valid());
-        return Parser{
+        return FieldParser{
             ._text = text,
             ._opts = opts,
             .err = null,
@@ -87,7 +207,7 @@ pub const Parser = struct {
     }
 
     /// Gets the current start position
-    pub fn startPos(self: *const Parser) u64 {
+    pub fn startPos(self: *const FieldParser) u64 {
         const base = self._state.start_chunk * 64 + self._state.start_chunk_pos;
         if (self._state.skip) {
             return base + 1;
@@ -96,12 +216,12 @@ pub const Parser = struct {
     }
 
     /// Returns if a parser is done
-    pub fn done(self: *const Parser) bool {
+    pub fn done(self: *const FieldParser) bool {
         return self.startPos() >= self._text.len or self.err != null;
     }
 
     /// Returns whether has next chunk
-    fn hasNextChunk(self: *const Parser) bool {
+    fn hasNextChunk(self: *const FieldParser) bool {
         return self._state.next_chunk * 64 < self._text.len;
     }
 
@@ -116,14 +236,16 @@ pub const Parser = struct {
 
     /// Gets the next CSV field
     /// Errors are stored in the `err` property
-    pub fn next(self: *Parser) ?Field {
+    pub fn next(self: *FieldParser) ?RowField {
         if (self.done()) {
             if (self._state.field_start) {
                 self._state.field_start = false;
-                return Field{
-                    .data = self._text[self._text.len..],
+                return RowField{
+                    .field = Field{
+                        ._data = self._text[self._text.len..],
+                        ._opts = self._opts,
+                    },
                     .row_end = true,
-                    ._opts = self._opts,
                 };
             }
             return null;
@@ -175,7 +297,7 @@ pub const Parser = struct {
                 i64,
                 @bitCast(self._state.prev_quote >> (chunk_size - 1)),
             ));
-            const quoted = Parser.quotedRegions(match_quotes) ^ carry;
+            const quoted = FieldParser.quotedRegions(match_quotes) ^ carry;
             defer self._state.prev_quote = quoted;
 
             const unquoted = ~quoted;
@@ -286,17 +408,21 @@ pub const Parser = struct {
 
         if (self.done() and self._text[self._text.len - 1] == comma) {
             self._state.field_start = true;
-            return Field{
-                .data = field,
+            return RowField{
+                .field = Field{
+                    ._data = field,
+                    ._opts = self._opts,
+                },
                 .row_end = false,
-                ._opts = self._opts,
             };
         }
 
-        return Field{
-            .data = field,
+        return RowField{
+            .field = Field{
+                ._data = field,
+                ._opts = self._opts,
+            },
             .row_end = row_end,
-            ._opts = self._opts,
         };
     }
 
@@ -313,15 +439,16 @@ pub const Parser = struct {
     }
 };
 
-/// Initializes parser
-pub fn init(text: []const u8, opts: common.CsvOpts) Parser {
-    return Parser.init(text, opts);
+/// Initializes fields parser
+/// Only use when you want more complexity in exchange for better performance
+pub fn fieldsInit(text: []const u8, opts: common.CsvOpts) FieldParser {
+    return FieldParser.init(text, opts);
 }
 
 test "simd array custom chars" {
     const testing = @import("std").testing;
     const csv = "c1;c2;c3;c4;c5\\\tr1;'ff1;ff2';;ff3;ff4\tr2;' ';' ';' ';' '\tr3;1  ;2  ;3  ;4  \tr4;   ;   ;   ;   \tr5;abc;def;geh;''''\tr6;'''';' '' ';hello;'b b b'\t";
-    var parser = init(csv, .{
+    var parser = fieldsInit(csv, .{
         .column_delim = ';',
         .column_line_end_prefix = '\\',
         .column_line_end = '\t',
@@ -352,7 +479,7 @@ test "simd array custom chars" {
             fields += 1;
             if (f.row_end) lines += 1;
         }
-        try f.decode(fb_stream.writer());
+        try f.field.decode(fb_stream.writer());
         try testing.expectEqualStrings(expected_decoded[fields], fb_stream.getWritten());
     }
 
@@ -375,7 +502,7 @@ test "simd array" {
         \\r5,abc,def,geh,""""
         \\r6,""""," "" ",hello,"b b b"
     ;
-    var parser = init(csv, .{});
+    var parser = fieldsInit(csv, .{});
 
     const expected_fields: usize = 35;
     const expected_lines: usize = 7;
@@ -401,7 +528,7 @@ test "simd array" {
             fields += 1;
             if (f.row_end) lines += 1;
         }
-        try f.decode(fb_stream.writer());
+        try f.field.decode(fb_stream.writer());
         try testing.expectEqualStrings(expected_decoded[fields], fb_stream.getWritten());
     }
 
@@ -427,7 +554,7 @@ test "array field streamer" {
         \\York",43,no,
         \\4,,,no,
     ;
-    var parser = init(input, .{});
+    var parser = fieldsInit(input, .{});
 
     const expected = [_][]const u8{
         "userid", "name",                    "age", "active", "",
@@ -445,7 +572,7 @@ test "array field streamer" {
             buff.clearRetainingCapacity();
             ei += 1;
         }
-        try f.decode(buff.writer());
+        try f.field.decode(buff.writer());
         const atEnd = ei % 5 == 4;
         const field = buff.items;
         try std.testing.expectEqualStrings(expected[ei], field);
@@ -476,7 +603,7 @@ test "slice streamer" {
         \\35,"""""""""",1,no,
     ;
 
-    var parser = init(input, .{});
+    var parser = fieldsInit(input, .{});
     const expected = [_][]const u8{
         "userid", "name",                    "age", "active", "",
         "1",      "John Doe",                "23",  "no",     "",
@@ -495,7 +622,7 @@ test "slice streamer" {
             buff.clearRetainingCapacity();
             ei += 1;
         }
-        try f.decode(buff.writer());
+        try f.field.decode(buff.writer());
         const atEnd = ei % 5 == 4;
         const field = buff.items;
         try std.testing.expectEqualStrings(expected[ei], field);
@@ -573,6 +700,166 @@ test "slice iterator" {
     };
 
     for (tests) |testCase| {
+        var iterator = FieldParser.init(testCase.input, .{});
+        var cnt: usize = 0;
+        while (iterator.next()) |_| {
+            cnt += 1;
+        }
+
+        try testing.expectEqual(testCase.err, iterator.err);
+        try testing.expectEqual(testCase.count, cnt);
+    }
+}
+
+test "row and field iterator 2" {
+    const testing = @import("std").testing;
+
+    const input =
+        \\userid,name,age
+        \\1,"Jonny",23
+        \\2,Jack,32
+    ;
+
+    const fieldCount = 9;
+
+    var parser = FieldParser.init(input, .{});
+    var cnt: usize = 0;
+    while (parser.next()) |_| {
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "crlf, at 63" {
+    const testing = @import("std").testing;
+
+    const input =
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+        ",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+        ",012345678901234567890123456789012345678901234567890123456789\r\n,";
+
+    const fieldCount = 17;
+
+    var parser = FieldParser.init(input, .{});
+    var b: [100]u8 = undefined;
+    var buff = std.io.fixedBufferStream(&b);
+    var cnt: usize = 0;
+    while (parser.next()) |_| {
+        buff.reset();
+        cnt += 1;
+        try testing.expectEqual(null, std.mem.indexOf(u8, buff.getWritten(), "\n"));
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "crlf\", at 63" {
+    const testing = @import("std").testing;
+
+    const input =
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+        "\"\",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+        ",012345678901234567890123456789012345678901234567890123456789\r\n,";
+
+    const fieldCount = 17;
+
+    var parser = FieldParser.init(input, .{});
+    var cnt: usize = 0;
+    while (parser.next()) |_| {
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "crlfa, at 63" {
+    const testing = @import("std").testing;
+
+    const input =
+        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
+        "a,,012345678901234567890123456789012345678901234567890123456789\r\n" ++
+        ",012345678901234567890123456789012345678901234567890123456789\r\n,";
+
+    const fieldCount = 17;
+
+    var parser = FieldParser.init(input, .{});
+    var cnt: usize = 0;
+    while (parser.next()) |_| {
+        cnt += 1;
+    }
+
+    try testing.expectEqual(fieldCount, cnt);
+}
+
+test "row iterator" {
+    const testing = @import("std").testing;
+
+    const tests = [_]struct {
+        input: []const u8,
+        count: usize,
+        err: ?CsvReadError = null,
+    }{
+        .{
+            .input = "c1,c2,c3\r\nv1,v2,v3\na,b,c",
+            .count = 3,
+        },
+        .{
+            .input = "c1,c2,c3\r\nv1,v2,v3\na,b,c\r\n",
+            .count = 3,
+        },
+        .{
+            .input = "c1,c2,c3\r\nv1,v2,v3\na,b,c\n",
+            .count = 3,
+        },
+        .{
+            .input = "\",,\",",
+            .count = 1,
+        },
+        .{
+            .input =
+            \\abc,"def",
+            \\"def""geh",
+            ,
+            .count = 2,
+        },
+        .{
+            .input =
+            \\abc,"def",
+            \\abc"def""geh",
+            ,
+            .count = 1,
+            .err = CsvReadError.UnexpectedQuote,
+        },
+        .{
+            .input =
+            \\abc,"def",
+            \\"def"geh",
+            ,
+            .count = 1,
+            .err = CsvReadError.UnexpectedEndOfFile,
+        },
+        .{
+            .input =
+            \\abc,"def",
+            \\"def""geh,
+            ,
+            .count = 1,
+            .err = CsvReadError.UnexpectedEndOfFile,
+        },
+        .{
+            .input = "abc,serkj\r",
+            .count = 1,
+            .err = CsvReadError.InvalidLineEnding,
+        },
+        .{
+            .input = "abc,serkj\r1232,232",
+            .count = 1,
+            .err = CsvReadError.InvalidLineEnding,
+        },
+    };
+
+    for (tests) |testCase| {
         var iterator = Parser.init(testCase.input, .{});
         var cnt: usize = 0;
         while (iterator.next()) |_| {
@@ -597,69 +884,11 @@ test "row and field iterator" {
 
     var parser = Parser.init(input, .{});
     var cnt: usize = 0;
-    while (parser.next()) |_| {
-        cnt += 1;
-    }
-
-    try testing.expectEqual(fieldCount, cnt);
-}
-
-test "crlf, at 63" {
-    const testing = @import("std").testing;
-
-    const input =
-        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
-        ",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
-        ",012345678901234567890123456789012345678901234567890123456789\r\n,";
-
-    const fieldCount = 17;
-
-    var parser = Parser.init(input, .{});
-    var b: [100]u8 = undefined;
-    var buff = std.io.fixedBufferStream(&b);
-    var cnt: usize = 0;
-    while (parser.next()) |_| {
-        buff.reset();
-        cnt += 1;
-        try testing.expectEqual(null, std.mem.indexOf(u8, buff.getWritten(), "\n"));
-    }
-
-    try testing.expectEqual(fieldCount, cnt);
-}
-
-test "crlf\", at 63" {
-    const testing = @import("std").testing;
-
-    const input =
-        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
-        "\"\",,012345678901234567890123456789012345678901234567890123456789\r\n" ++
-        ",012345678901234567890123456789012345678901234567890123456789\r\n,";
-
-    const fieldCount = 17;
-
-    var parser = Parser.init(input, .{});
-    var cnt: usize = 0;
-    while (parser.next()) |_| {
-        cnt += 1;
-    }
-
-    try testing.expectEqual(fieldCount, cnt);
-}
-
-test "crlfa, at 63" {
-    const testing = @import("std").testing;
-
-    const input =
-        ",012345,,8901234,678901,34567890123456,890123456789012345678,,,\r\n" ++
-        "a,,012345678901234567890123456789012345678901234567890123456789\r\n" ++
-        ",012345678901234567890123456789012345678901234567890123456789\r\n,";
-
-    const fieldCount = 17;
-
-    var parser = Parser.init(input, .{});
-    var cnt: usize = 0;
-    while (parser.next()) |_| {
-        cnt += 1;
+    while (parser.next()) |row| {
+        var iter = row.iter();
+        while (iter.next()) |_| {
+            cnt += 1;
+        }
     }
 
     try testing.expectEqual(fieldCount, cnt);

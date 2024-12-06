@@ -66,10 +66,11 @@ pub fn parseFile(alloc: std.mem.Allocator, fileName: []const u8) !std.ArrayList(
     errdefer res.deinit();
 
     // We can read directly from our file reader
-    var parser = zcsv.column.init(alloc, file.reader(), .{});
+    var parser = zcsv.allocs.column.init(alloc, file.reader(), .{});
 
     var columns = std.StringHashMap(usize).init(alloc);
     defer columns.deinit();
+    const asInt = zcsv.decode.fieldToInt;
 
     var maxIndex: usize = 0;
 
@@ -114,9 +115,9 @@ pub fn parseFile(alloc: std.mem.Allocator, fileName: []const u8) !std.ArrayList(
         }
 
         try res.append(User{
-            .id = (try (try row.field(columns.get("id").?)).asInt(i64, 10)).?,
+            .id = (try asInt(i16, try row.field(columns.get("id").?), 10)).?,
             .name = try (try row.field(columns.get("name").?)).clone(alloc),
-            .age = try (try row.field(columns.get("age").?)).asInt(u16, 10),
+            .age = try asInt(u16, try row.field(columns.get("age").?), 10),
         });
     }
 

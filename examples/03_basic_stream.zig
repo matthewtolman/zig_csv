@@ -12,20 +12,25 @@ pub fn main() !void {
         \\5934810,"Win The Fish",-
     ;
     const stderr = std.io.getStdErr().writer();
+    var buff = std.io.fixedBufferStream(csv);
+    const reader = buff.reader();
 
-    var parser = zcsv.slice.fields.init(csv, .{});
+    var parser = zcsv.zero_allocs.stream.init(reader, @TypeOf(stderr), .{});
     std.log.info("Enter CSV to parse", .{});
 
     try stderr.print("> ", .{});
     // The writer is passed to each call to next
     // This allows us to use a different writer per field
-    while (parser.next()) |f| {
+    //
+    // next does throw if it has an error.
+    // next will return `false` when it hits the end of the input
+    while (!parser.done()) {
+        try parser.next(stderr);
         // Do whatever you need to here for the field
-        try f.decode(stderr);
 
         // This is how you can tell if you're about to move to the next row
         // Note that we aren't at the next row, just that we're about to move
-        if (f.row_end) {
+        if (parser.atRowEnd()) {
             if (!parser.done()) {
                 try stderr.print("\n> ", .{});
             } else {
@@ -34,10 +39,5 @@ pub fn main() !void {
         } else {
             try stderr.print("\t", .{});
         }
-    }
-
-    // check for errors
-    if (parser.err) |err| {
-        return err;
     }
 }

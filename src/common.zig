@@ -14,7 +14,7 @@ pub const CsvReadError = error{
 };
 
 /// Represents errors when parsing booleans
-const ParseBoolError = error{
+pub const ParseBoolError = error{
     InvalidBoolInput,
 };
 
@@ -72,7 +72,7 @@ pub const CsvOpts = struct {
 
 const std = @import("std");
 
-/// Unquotes a quoted CSV field
+/// Unquotes a quoted CSV field, but does not unescape internal quotes
 /// Assumes the field is a valid CSV field
 pub fn unquoteQuoted(data: []const u8, opts: CsvOpts) []const u8 {
     std.debug.assert(opts.valid());

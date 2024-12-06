@@ -1,6 +1,5 @@
 // This file will take a CLI argument for a file and then parse that CSV file
-// It will then put everything into an array of structs and detach the memory
-// from the row of memory
+// It will then put everything into an array of structs
 
 const zcsv = @import("zcsv");
 const std = @import("std");
@@ -67,15 +66,18 @@ pub fn parseFile(alloc: std.mem.Allocator, fileName: []const u8) !std.ArrayList(
     errdefer res.deinit();
 
     // We can read directly from our file reader
-    var parser = try zcsv.map_ck.init(alloc, file.reader(), .{});
+    var parser = try zcsv.allocs.map_temporary.init(alloc, file.reader(), .{});
 
     // We do need to deinitialize this parser to free it's copy of the header
     defer parser.deinit();
+    const asInt = zcsv.decode.fieldToInt;
 
     while (parser.next()) |row| {
         // Clean up our memory
-        // With map_ck our row memory can outlive our parser memory
-        // This is because the row headers are copied for each row
+        // Note: since we're using map_temporary our row cannot outlive the parser!
+        //       this does come with a (slight) performance gain due to less
+        //       memory allocations and copying taking place, but it has extra
+        //       limitations on lifetimes
         defer row.deinit();
 
         const id = row.data().get("userid") orelse return error.MissingUserId;
@@ -83,11 +85,11 @@ pub fn parseFile(alloc: std.mem.Allocator, fileName: []const u8) !std.ArrayList(
         const age = row.data().get("age") orelse return error.MissingAge;
 
         try res.append(User{
-            .id = id.asInt(i64, 10) catch {
+            .id = asInt(i64, id, 10) catch {
                 return error.InvalidUserId;
             } orelse return error.MissingUserId,
             .name = try name.clone(alloc),
-            .age = age.asInt(u16, 10) catch return error.InvalidAge,
+            .age = asInt(u16, age, 10) catch return error.InvalidAge,
         });
     }
 
