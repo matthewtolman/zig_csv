@@ -116,6 +116,7 @@ pub fn Parser(comptime Reader: type) type {
     const Writer = std.ArrayList(u8).Writer;
     const Fs = streamFast.Parser(Reader, Writer);
     return struct {
+        pub const Rows = Row;
         pub const Error = Fs.Error || std.mem.Allocator.Error || error{
             EndOfInput,
             EndOfStream,

@@ -74,7 +74,7 @@ pub const Row = struct {
 
     /// Returns the number of fields/columns in a row
     pub fn len(self: *const Row) usize {
-        return self._fields.items.len;
+        return self._len;
     }
 
     /// Gets the field/column at an index
@@ -115,6 +115,7 @@ pub fn init(text: []const u8, opts: common.CsvOpts) Parser {
 /// Will parse a row twice, once for identifying the row end
 /// and once for iterating over fields in a row
 pub const Parser = struct {
+    pub const Rows = Row;
     _text: []const u8,
     _field_parser: FieldParser,
     _opts: CsvOpts,

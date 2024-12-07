@@ -10,6 +10,8 @@ pub const allocs = @import("allocs.zig");
 /// floats, and []u8
 pub const writer = @import("writer.zig");
 
+pub const ParserBuilder = @import("builder.zig").Builder;
+
 /// CSV to Zig value decoding methods
 /// These are opinionated, but the source can be useful for making your own
 pub const decode = @import("decode.zig");
