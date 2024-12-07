@@ -13,6 +13,7 @@
   * [Stream Parser (zero-allocation)](#stream-parser-zero-allocation)
 * [Parser Loop Limit Options](#parser-loop-limit-options)
 * [Changing delimiters, quotes, and newlines](#changing-delimiters-quotes-and-newlines)
+* [Parser Builder](#parser-builder)
 * [Memory Lifetimes](#memory-lifetimes)
 * [Utility Methods](#utility-methods)
   * [Field Methods](#field-methods)
@@ -416,6 +417,57 @@ Each parser and writer will take a `CsvOpts` struct which has options for custom
 Do note that the parsers and writers do expect each of the above options to be unique, including the line ending and line ending prefix. This means that line endings which require repeating characters (e.g. `\n\n`) are not supported.
 
 Using invalid options is undefined behavior. In safe builds this will usually result in a panic. In non-safe builds the behavior is undefined (e.g. unusual parse behavior, weird errors, infinite loops, etc). Each `CsvOpts` has a `valid()` method which will return whether or not the options are valid. It is recommended that this method be used to validate any user or untrusted input prior to sending it to a parser or a writer.
+
+## Parser Builder
+
+To help with in-code discovery of parsers, a parser builder is provided with `zcsv.ParserBuilder`. The builder provides options for choosing a parser and for setting CSV options (such as delimiter, quote, line ending, etc). Additionally, the builder will take an allocator whenever an allocating parser is chosen and won't take an allocator when a zero-allocation parser is chosen. The builder also distinguishes between reader and slice input types.
+
+The builder also provides methods to cleanup parsers and rows. These methods will become no-ops if no work is needed. This helps minimize the amount of work needed to switch between parsers. Also, if the cleanup methods are consistently used it can help prevent memory leaks when switching between parser types (which can often happen when moving from a zero-allocation parser to an allocating parser).
+
+Below is an example of how to use a parser builder:
+
+```zig
+// Get our allocator
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+defer _ = gpa.deinit();
+const alloc = gpa.allocator();
+
+// Get our reader
+var fbs = std.io.fixedBufferStream(csv[0..]);
+const reader = fbs.reader();
+
+// Get our builder
+const builder = zcsv.ParserBuilder
+//  These calls determine which parser we will use
+//  They are required
+    .withReaderInput(@TypeOf(reader))
+    .withHeaderRow(alloc)
+//  These calls customize the CSV tokens used for parsing
+//  These are optional and only shown for demonstration purposes
+    .withQuote('"')
+    .withDelimiter(',');
+
+// Make our parser
+var parser = try builder.build(reader);
+// Ensures parser is cleaned up properly
+// This works regardless of what type of parser is returned
+// It will also continue to work if parser's cleanup gets changed
+// in the future
+defer builder.denitParser(parser);
+
+std.debug.print("id\tname\tage\n-------------------\n", .{});
+while (parser.next()) |row| {
+    // Ensure our row is cleaned up
+    defer builder.deinitRow(row);
+
+    // Work with the row data
+    std.debug.print("{s}\t{s}\t{s}\n", .{
+        row.data().get("id").?.data(),
+        row.data().get("name").?.data(),
+        row.data().get("age").?.data(),
+    });
+}
+```
 
 ## Memory Lifetimes
 

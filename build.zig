@@ -70,6 +70,7 @@ pub fn build(b: *std.Build) void {
         .{ .file = "examples/08_write_csv.zig", .name = "example_8" },
         .{ .file = "examples/09_custom_delims.zig", .name = "example_9" },
         .{ .file = "examples/10_advanced_field_streaming.zig", .name = "example_10" },
+        .{ .file = "examples/11_builder_usage.zig", .name = "example_11" },
     };
     {
         for (examples) |example| {

@@ -32,6 +32,7 @@ fn cloneRow(self: *const column.Row, alloc: std.mem.Allocator) !column.Row {
 pub fn Parser(comptime Reader: type) type {
     const ColParser = column.Parser(Reader);
     return struct {
+        pub const Rows = Row;
         pub const Error = ColParser.Error || error{NoHeaderForColumn};
         _lineParser: ColParser,
         _header: column.Row,

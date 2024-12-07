@@ -3,6 +3,8 @@ const column = @import("column.zig");
 
 pub const Field = column.Field;
 
+pub const CsvOpts = column.CsvOpts;
+
 /// Represents a CSV row
 pub const Row = struct {
     _header_row: ?column.Row,
@@ -59,7 +61,9 @@ fn cloneRow(self: column.Row, alloc: std.mem.Allocator) !column.Row {
 pub fn Parser(comptime Reader: type) type {
     const ColParser = column.Parser(Reader);
     return struct {
+        pub const Rows = Row;
         pub const Error = ColParser.Error || error{NoHeaderForColumn};
+        pub const InitError = Error || error{NoHeaderRow};
         _lineParser: ColParser,
         _header: column.Row,
         _alloc: std.mem.Allocator,
@@ -70,7 +74,7 @@ pub fn Parser(comptime Reader: type) type {
             allocator: std.mem.Allocator,
             reader: Reader,
             opts: column.CsvOpts,
-        ) !@This() {
+        ) InitError!@This() {
             var parser = column.init(allocator, reader, opts);
             const row = parser.next();
             if (parser.err) |err| {
@@ -84,7 +88,7 @@ pub fn Parser(comptime Reader: type) type {
                     ._alloc = allocator,
                 };
             } else {
-                return error.NoHeaderRow;
+                return InitError.NoHeaderRow;
             }
         }
 
