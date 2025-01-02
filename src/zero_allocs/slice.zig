@@ -347,11 +347,6 @@ pub const FieldParser = struct {
                     self.err = CsvReadError.UnexpectedEndOfFile;
                     return null;
                 }
-
-                if (self._text[self._text.len - 1] == cr) {
-                    self.err = CsvReadError.InvalidLineEnding;
-                    return null;
-                }
             }
 
             const expected_end_seps = ((quote_ends << 1) | (self._state.prev_quote_ends >> (chunk_size - 1))) & (~quote_starts);
