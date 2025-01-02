@@ -333,6 +333,7 @@ pub const FieldParser = struct {
 
             // Sometimes this gets the starting/ending bits wrong when an
             // escaped quote happens on a boundary
+            // This code helps detect and correct those errors
             const quote_starts = quote_strings & ~(quote_strings << 1);
             const quote_ends = quote_strings & ~(quote_strings >> 1);
             const expected_starts = quote_starts & ~(self._state.prev_quote_ends >> (chunk_size - 1));
