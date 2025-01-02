@@ -24,7 +24,7 @@
 
 ## Summary
 
-> Supported Zig versions: 0.13.0,0.14.0-dev.2316+68b3f5086 
+> Supported Zig versions: 0.13.0,0.14.0-dev.2596+e6879e99e
 
 ZCSV is a CSV parser and writer library.
 
