@@ -209,7 +209,7 @@ pub const FieldParser = struct {
 
     /// Gets the current start position
     pub fn startPos(self: *const FieldParser) u64 {
-        const base = self._state.start_chunk * 64 + self._state.start_chunk_pos;
+        const base = self._state.start_chunk * chunk_size + self._state.start_chunk_pos;
         if (self._state.skip) {
             return base + 1;
         }
@@ -223,7 +223,7 @@ pub const FieldParser = struct {
 
     /// Returns whether has next chunk
     fn hasNextChunk(self: *const FieldParser) bool {
-        return self._state.next_chunk * 64 < self._text.len;
+        return self._state.next_chunk * chunk_size < self._text.len;
     }
 
     /// reates match bit string
@@ -270,7 +270,7 @@ pub const FieldParser = struct {
                 self._state.next_chunk += 1;
             }
 
-            const next_chunk_start = self._state.next_chunk * 64;
+            const next_chunk_start = self._state.next_chunk * chunk_size;
             assert(next_chunk_start < self._text.len);
 
             const sub_text = self._text[next_chunk_start..];
@@ -372,7 +372,7 @@ pub const FieldParser = struct {
         }
 
         const chunk_end = @ctz(self._state.field_separators);
-        const t_end = (self._state.end_chunk * 64) + chunk_end;
+        const t_end = (self._state.end_chunk * chunk_size) + chunk_end;
         const end_pos = @min(self._text.len - 1, t_end);
         assert(self._state.end_chunk >= self._state.start_chunk);
 
