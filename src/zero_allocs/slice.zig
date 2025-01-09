@@ -138,12 +138,15 @@ pub const Parser = struct {
                 return null;
             }
             defer index += 1;
+
             self.err = self._field_parser.err;
             if (self.err) |_| {
                 return null;
             }
+
             end += f.field._data.len + 1;
             end = @min(end, self._text.len);
+
             if (f.row_end) {
                 break;
             }
@@ -154,8 +157,27 @@ pub const Parser = struct {
         assert(end <= self._text.len);
         assert(end >= start);
 
+        var data = self._text[start..end];
+        if (data.len > 0 and data[data.len - 1] == self._opts.column_line_end_prefix) {
+            data = data[0..(data.len - 1)];
+        }
+
+        if (self._field_parser.done()) {
+            if (data.len == 0) {
+                return null;
+            }
+            if (self._opts.column_line_end_prefix) |cr| {
+                if (data.len == 2 and data[0] == cr and data[1] == self._opts.column_line_end) {
+                    return null;
+                }
+            }
+            if (data.len == 1 and data[0] == self._opts.column_line_end) {
+                return null;
+            }
+        }
+
         return Row{
-            ._data = self._text[start..end],
+            ._data = data,
             ._opts = self._opts,
             ._len = index,
         };
@@ -830,7 +852,7 @@ test "row iterator" {
             \\abc,"def",
             \\abc"def""geh",
             ,
-            .count = 1,
+            .count = 0,
             .err = CsvReadError.UnexpectedQuote,
         },
         .{
@@ -838,7 +860,7 @@ test "row iterator" {
             \\abc,"def",
             \\"def"geh",
             ,
-            .count = 1,
+            .count = 0,
             .err = CsvReadError.UnexpectedEndOfFile,
         },
         .{
@@ -846,17 +868,17 @@ test "row iterator" {
             \\abc,"def",
             \\"def""geh,
             ,
-            .count = 1,
+            .count = 0,
             .err = CsvReadError.UnexpectedEndOfFile,
         },
         .{
             .input = "abc,serkj\r",
-            .count = 1,
+            .count = 0,
             .err = CsvReadError.InvalidLineEnding,
         },
         .{
             .input = "abc,serkj\r1232,232",
-            .count = 1,
+            .count = 0,
             .err = CsvReadError.InvalidLineEnding,
         },
     };
@@ -895,3 +917,49 @@ test "row and field iterator" {
 
     try testing.expectEqual(fieldCount, cnt);
 }
+
+test "row end empty row" {
+    const repeat = 9441;
+    const testing = @import("std").testing;
+    const input = "2321234423412345678902322\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n1\r\n2\r\n3124,\r\n" ** repeat;
+    const rows = 11 * repeat;
+
+    var parser = Parser.init(input, .{});
+    var cnt : usize = 0;
+    while (parser.next()) |_| {
+        cnt += 1;
+    }
+
+    try testing.expectEqual(rows, cnt);
+}
+
+// For my own testing. I don't have the ability to distribute trips.csv at this time
+// I uncomment this for testing locally against a 13MB test file
+
+// test "csv" {
+//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+//     defer arena.deinit();
+//     const allocator = arena.allocator();
+//     var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+//     const path = try std.fs.realpathZ("trips.csv", &path_buffer);
+//
+//     const file = try std.fs.openFileAbsolute(path, .{});
+//     defer file.close();
+//
+//     const mb = (1 << 10) << 10;
+//     const csv = try file.readToEndAlloc(allocator, 500 * mb);
+//     var parser = Parser.init(csv, .{});
+//     var count: usize = 0;
+//     var lines: usize = 0;
+//     while (parser.next()) |row| {
+//         var iter = row.iter();
+//         lines += 1;
+//         while (iter.next()) |_| {
+//             count += 1;
+//         }
+//     }
+//
+//     try std.testing.expectEqual(114393, lines);
+//     try std.testing.expectEqual(915144, count);
+// }
+

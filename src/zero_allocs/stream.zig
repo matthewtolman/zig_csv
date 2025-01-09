@@ -156,6 +156,16 @@ const Chunk = struct {
     fn consumed(self: *const @This()) bool {
         return self.offset >= self.len;
     }
+
+    fn isEnd(self:*const @This()) bool {
+        const chunk = self.bytes[self.offset .. self.len];
+        if (chunk.len == 0) return true;
+        if (chunk.len == 1 and chunk[0] == self.opts.column_line_end) return true;
+        if (self.opts.column_line_end_prefix) |cr| {
+            if (chunk.len == 2 and chunk[0] == cr and chunk[1] == self.opts.column_line_end) return true;
+        }
+        return false;
+    }
 };
 
 const ParserState = struct {
@@ -225,6 +235,8 @@ pub fn Parser(comptime Reader: type, comptime Writer: type) type {
                 if (self._state.next_chunk.len == 0) {
                     return true;
                 }
+            } else if (self._state.cur_chunk.atEnd() and self._state.cur_chunk.isEnd()) {
+                return true;
             }
             return false;
         }
@@ -806,3 +818,41 @@ test "End with quote" {
 
     try testing.expectEqual(fieldCount, cnt);
 }
+
+// For my own testing. I don't have the ability to distribute trips.csv at this time
+// I uncomment this for testing locally against a 13MB test file
+
+// test "csv" {
+//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+//     defer arena.deinit();
+//
+//     const allocator = arena.allocator();
+//     var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+//     const path = try std.fs.realpathZ("trips.csv", &path_buffer);
+//
+//     const file = try std.fs.openFileAbsolute(path, .{});
+//     defer file.close();
+//
+//     const mb = (1 << 10) << 10;
+//     const csv = try file.readToEndAlloc(allocator, 500 * mb);
+//     var input = std.io.fixedBufferStream(csv);
+//     
+//     var buff = std.ArrayList(u8).init(std.testing.allocator);
+//     defer buff.deinit();
+//
+//     var stream = init(input.reader(), @TypeOf(buff.writer()), .{});
+//     var count: usize = 0;
+//     var lines: usize = 0;
+//     while (!stream.done()) {
+//         defer { buff.clearRetainingCapacity(); }
+//         try stream.next(buff.writer());
+//         count += 1;
+//         if (stream.atRowEnd()) {
+//             lines += 1;
+//         }
+//     }
+//
+//     try std.testing.expectEqual(114393, lines);
+//     try std.testing.expectEqual(915144, count);
+// }
+
