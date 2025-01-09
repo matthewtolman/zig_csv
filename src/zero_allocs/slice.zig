@@ -332,7 +332,7 @@ pub const FieldParser = struct {
             const expected_lfs = (match_crs << 1) | (self._state.prev_cr >> (chunk_size - 1));
             const masked_lfs = expected_lfs & field_lfs;
 
-            if (@popCount(expected_lfs) != @popCount(masked_lfs)) {
+            if (expected_lfs != masked_lfs) {
                 self.err = CsvReadError.InvalidLineEnding;
                 return null;
             }
@@ -383,12 +383,12 @@ pub const FieldParser = struct {
             const masked_end_seps = self._state.field_separators & expected_end_seps;
             const masked_sep_start = field_seps_start & expected_starts;
 
-            if (!at_end and @popCount(expected_end_seps) != @popCount(masked_end_seps)) {
+            if (!at_end and expected_end_seps != masked_end_seps) {
                 self.err = CsvReadError.QuotePrematurelyTerminated;
                 return null;
             }
 
-            if (@popCount(masked_sep_start) != @popCount(expected_starts)) {
+            if (masked_sep_start != expected_starts) {
                 self.err = CsvReadError.UnexpectedQuote;
                 return null;
             }
