@@ -166,7 +166,7 @@ pub fn value(out_writer: anytype, field: anytype, opts: CsvOpts) !void {
                 return CsvWriteError.InvalidValueType;
             },
             .Pointer => |ptr_info| switch (ptr_info.size) {
-                .one => switch (@typeInfo(ptr_info.child)) {
+                .One => switch (@typeInfo(ptr_info.child)) {
                     .Array,
                     .Enum,
                     .Union,
@@ -175,13 +175,13 @@ pub fn value(out_writer: anytype, field: anytype, opts: CsvOpts) !void {
                     },
                     else => return CsvWriteError.InvalidValueType,
                 },
-                .many, .c => {
+                .Many, .C => {
                     if (ptr_info.child == u8) {
                         return writeCsvStr(out_writer, field, opts);
                     }
                     return CsvWriteError.InvalidValueType;
                 },
-                .slice => {
+                .Slice => {
                     if (ptr_info.child == u8) {
                         return writeCsvStr(out_writer, field, opts);
                     }
