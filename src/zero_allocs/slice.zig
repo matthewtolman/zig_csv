@@ -329,7 +329,7 @@ pub const FieldParser = struct {
             const field_crs = match_crs & unquoted;
             const field_lfs = match_lfs & unquoted;
 
-            const expected_lfs = (match_crs << 1) | (self._state.prev_cr >> (chunk_size - 1));
+            const expected_lfs = (field_crs << 1) | (self._state.prev_cr >> (chunk_size - 1));
             const masked_lfs = expected_lfs & field_lfs;
 
             if (expected_lfs != masked_lfs) {
