@@ -42,7 +42,7 @@ jobs:
       # Run with supported dev branch
       - name: Test with supported dev
         run: |
-          ./zigup 0.15.0-dev.769+4d7980645
+          ./zigup fetch 0.15.0-dev.769+4d7980645
           ./zigup run 0.15.0-dev.769+4d7980645 build test
 
       # Run with supported latest master
