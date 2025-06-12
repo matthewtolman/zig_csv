@@ -34,16 +34,16 @@ jobs:
         run: chmod +x ./zigup
         
       # Runs a set of commands using the runners shell
-      - name: Test with 0.13.0
+      - name: Test with 0.14.0
         run: |
-          ./zigup fetch 0.13.0
-          ./zigup run 0.13.0 build test
+          ./zigup fetch 0.14.0
+          ./zigup run 0.14.0 build test
           
       # Run with supported dev branch
       - name: Test with supported dev
         run: |
-          ./zigup fetch 0.14.0
-          ./zigup run 0.14.0 build test
+          ./zigup 0.15.0-dev.769+4d7980645
+          ./zigup run 0.15.0-dev.769+4d7980645 build test
 
       # Run with supported latest master
       # - name: Test with latest master
